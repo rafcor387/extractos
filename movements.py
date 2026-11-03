@@ -78,6 +78,14 @@ def apply_edits(current: pd.DataFrame, row_indices: list[int], edits: Mapping) -
     return validate_movements(candidate)
 
 
+def remove_movements(current: pd.DataFrame, row_indices: Iterable[int]) -> pd.DataFrame:
+    """Elimina filas sin mutar el original y rechaza selecciones de índices obsoletos."""
+    selected = set(row_indices)
+    if selected.difference(current.index):
+        raise ValueError("La selección de registros ya no corresponde al consolidado actual.")
+    return current.drop(index=list(selected)).reset_index(drop=True)
+
+
 def totals(df: pd.DataFrame) -> tuple[float, float, float]:
     income = round(float(df.loc[df["tipo"] == "INGRESO", "monto"].sum()), 2)
     expense = round(float(df.loc[df["tipo"] == "EGRESO", "monto"].sum()), 2)

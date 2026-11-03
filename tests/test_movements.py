@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from movements import (apply_edits, consolidate, empty_movements, from_records,
-                       to_csv_bytes, to_excel_bytes, totals)
+                       remove_movements, to_csv_bytes, to_excel_bytes, totals)
 
 
 @pytest.fixture
@@ -57,3 +57,26 @@ def test_formula_like_glosa_exported_as_literal(frame):
     assert workbook.active["D2"].data_type == "n"
     assert "'=1+1" in to_csv_bytes(frame).decode("utf-8-sig")
     assert frame.loc[0, "glosa"] == "=1+1"
+
+
+def test_deleted_movements_excluded_from_totals_and_both_exports(frame):
+    remaining = remove_movements(frame, [1])
+    assert remaining["glosa"].tolist() == ["Abono", "Depósito"]
+    assert totals(remaining) == (130.0, 0.0, 130.0)
+    assert pd.read_csv(BytesIO(to_csv_bytes(remaining)))["glosa"].tolist() == ["Abono", "Depósito"]
+    assert pd.read_excel(BytesIO(to_excel_bytes(remaining)))["glosa"].tolist() == ["Abono", "Depósito"]
+    assert len(frame) == 3
+
+
+def test_delete_all_preserves_schema_and_zero_totals(frame):
+    remaining = remove_movements(frame, frame.index)
+    assert remaining.empty
+    assert list(remaining.columns) == list(frame.columns)
+    assert totals(remaining) == (0.0, 0.0, 0.0)
+
+
+def test_stale_deletion_selection_rejected_atomically(frame):
+    before = frame.copy()
+    with pytest.raises(ValueError, match="selección"):
+        remove_movements(frame, [0, 99])
+    pd.testing.assert_frame_equal(frame, before)

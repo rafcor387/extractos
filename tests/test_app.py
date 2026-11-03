@@ -23,7 +23,7 @@ def test_empty_app_requires_bank_and_files():
     at = AppTest.from_file(APP).run()
     assert not at.exception
     assert at.radio[0].value is None
-    assert at.button[0].disabled
+    assert at.button(key="process_uploads_button").disabled
     assert at.get("file_uploader")[0].proto.disabled
     assert len(at.session_state["df_movimientos"]) == 0
 
@@ -54,7 +54,7 @@ def test_filters_metrics_clear():
     assert not at.exception
     assert len(at.dataframe[0].value) == 1
     assert len(at.session_state["df_movimientos"]) == 2
-    at.button[1].click().run()
+    at.button(key="clear_data_button").click().run()
     assert not at.exception
     assert at.session_state["df_movimientos"].empty
 
@@ -186,14 +186,113 @@ with patch("app.st.file_uploader", side_effect=pick_file):
     main()
 ''').run()
     at.radio(key="upload_origin").set_value("YASTA").run()
-    at.button[0].click().run()
+    at.button(key="process_uploads_button").click().run()
     assert not at.exception
     assert at.radio(key="upload_origin").value is None
     assert len(at.session_state["df_movimientos"]) == 1
     at.radio(key="upload_origin").set_value("BNB").run()
-    at.button[0].click().run()
+    at.button(key="process_uploads_button").click().run()
     assert not at.exception
     assert at.radio(key="upload_origin").value is None
     assert at.session_state["df_movimientos"]["origen"].tolist() == ["YASTA", "BNB"]
     assert len(at.dataframe[-1].value) == 2
     assert [metric.value for metric in at.metric] == ["Bs 55.00", "Bs 20.00", "Bs 35.00"]
+
+
+def submit_editor_edits(at, changes):
+    states = at._tree.get_widget_states()
+    editor = states.widgets.add()
+    editor.id = at.dataframe[-1].proto.id
+    editor.string_value = json.dumps({"edited_rows": changes, "added_rows": [], "deleted_rows": []})
+    return at._run(states)
+
+
+def test_marking_then_deleting_filtered_row_updates_totals_and_preserves_other_rows():
+    at = seeded_app()
+    assert at.button(key="delete_selected_button").disabled
+    at.selectbox(key="filter_type").select("EGRESO").run()
+    submit_editor_edits(at, {"0": {"eliminar": True}})
+    assert not at.exception
+    assert at.session_state["rows_to_delete"] == {1}
+    assert len(at.session_state["df_movimientos"]) == 2
+    assert [metric.value for metric in at.metric] == ["Bs 55.00", "Bs 15.00", "Bs 40.00"]
+    # The grid keeps a stable base and paints its checked state from the edit delta.
+    assert at.session_state[at.session_state["editor_snapshot"]["key"]]["edited_rows"][0]["eliminar"]
+    # A filter change does not change the identity of the marked record.
+    at.selectbox(key="filter_type").select("INGRESO").run()
+    at.button(key="delete_selected_button").click().run()
+    assert not at.exception
+    assert at.session_state["df_movimientos"]["glosa"].tolist() == ["Abono"]
+    assert at.session_state["rows_to_delete"] == set()
+    assert [metric.value for metric in at.metric] == ["Bs 55.00", "Bs 0.00", "Bs 55.00"]
+    assert len(at.session_state["df_movimientos"].columns) == 5
+
+
+def test_unmarking_and_deleting_all_movements():
+    at = seeded_app()
+    submit_editor_edits(at, {"0": {"eliminar": True}})
+    submit_editor_edits(at, {"0": {"eliminar": False}})
+    assert not at.exception
+    assert at.session_state["rows_to_delete"] == set()
+    assert at.button(key="delete_selected_button").disabled
+    submit_editor_edits(at, {"0": {"eliminar": True}, "1": {"eliminar": True}})
+    at.button(key="delete_selected_button").click().run()
+    assert not at.exception
+    assert at.session_state["df_movimientos"].empty
+    assert [metric.value for metric in at.metric] == ["Bs 0.00", "Bs 0.00", "Bs 0.00"]
+
+
+def test_delete_selection_cleared_by_new_import_and_clear(monkeypatch):
+    import app
+
+    state = {}
+    monkeypatch.setattr(app.st, "session_state", state)
+    app.initialize_state()
+    state["rows_to_delete"] = {0}
+    uploaded = BytesIO(make_pdf([["BNB", "03/10/2026 11:26 Pago DÉBITO 20.00"]]))
+    uploaded.name = "bnb.pdf"
+    app.process_uploads([uploaded], "BNB")
+    assert state["rows_to_delete"] == set()
+    state["rows_to_delete"] = {0}
+    app.clear_data()
+    assert state["rows_to_delete"] == set()
+
+
+def test_empty_filtered_view_supports_delete_checkbox_column():
+    at = seeded_app()
+    at.selectbox(key="filter_origin").select("BNB").run()
+    assert not at.exception
+    assert at.dataframe[-1].value.empty
+    assert at.button(key="delete_selected_button").disabled
+
+
+def test_selecting_rows_keeps_editor_identity_base_and_download_payloads():
+    at = seeded_app()
+    editor_id = at.dataframe[-1].proto.id
+    original = at.session_state["editor_snapshot"]["data"].copy()
+    payloads = at.session_state["download_payloads"]
+    revision = at.session_state["editor_revision"]
+    submit_editor_edits(at, {"0": {"eliminar": True}})
+    submit_editor_edits(at, {"0": {"eliminar": True}, "1": {"eliminar": True}})
+    assert not at.exception
+    assert at.dataframe[-1].proto.id == editor_id
+    assert at.session_state["editor_revision"] == revision
+    assert at.session_state["editor_snapshot"]["data"].equals(original)
+    assert at.session_state["download_payloads"] is payloads
+    assert at.session_state["rows_to_delete"] == {0, 1}
+
+
+def test_downloads_refresh_after_correction_and_deletion():
+    import pandas as pd
+
+    at = seeded_app()
+    submit_editor_edits(at, {"0": {"monto": 100.0}})
+    assert not at.exception
+    csv = pd.read_csv(BytesIO(at.session_state["download_payloads"]["csv"]))
+    assert csv["monto"].tolist() == [100.0, 15.0]
+    submit_editor_edits(at, {"1": {"eliminar": True}})
+    at.button(key="delete_selected_button").click().run()
+    assert not at.exception
+    csv = pd.read_csv(BytesIO(at.session_state["download_payloads"]["csv"]))
+    assert csv["monto"].tolist() == [100.0]
+    assert [metric.value for metric in at.metric] == ["Bs 100.00", "Bs 0.00", "Bs 100.00"]

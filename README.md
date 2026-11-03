@@ -31,12 +31,30 @@ solo necesitas el último comando.
    Confirma cada celda con Enter. Se recalculan los totales de todo el consolidado.
 5. Filtra por origen o tipo. Las correcciones afectan al registro original,
    también cuando trabajas sobre una vista filtrada.
-6. Descarga CSV o Excel. Elige entre el **consolidado completo** y la **vista filtrada**.
-7. **Limpiar datos** borra los movimientos y reinicia la carga de la sesión.
+6. Para quitar movimientos, marca su casilla en la columna **Eliminar** y pulsa
+   **Eliminar seleccionados**. La selección se conserva al cambiar filtros y
+   el botón elimina todos los marcados, incluso si algún filtro los oculta.
+   Al borrarlos dejan de contar en las métricas y en las descargas. Marcar una
+   casilla por sí solo no elimina el registro. La columna de selección pertenece
+   a la interfaz; el DataFrame consolidado y las exportaciones mantienen las cinco
+   columnas estándar.
+   Puedes marcar varias casillas seguidas conservando el desplazamiento de la
+   tabla. La selección actualiza solo el área del consolidado y reutiliza las
+   descargas preparadas; los archivos se regeneran cuando cambian los datos o
+   la vista elegida para exportar.
+7. Descarga CSV o Excel. Elige entre el **consolidado completo** y la **vista filtrada**.
+8. **Limpiar datos** borra los movimientos y reinicia la carga de la sesión.
 
 Descarga el resultado antes de cerrar/recargar la sesión o reiniciar el servidor:
 no hay recuperación de datos persistidos. No subas PDFs de entidades diferentes
 en una misma carga; cambia el selector entre cargas.
+
+Las sumatorias se calculan sobre el consolidado actual en memoria, con las
+correcciones y eliminaciones realizadas. Los filtros solo cambian la vista de
+la tabla; las métricas corresponden a todo el consolidado. No se crea un CSV
+en disco automáticamente: CSV y Excel se preparan en RAM y se guardan en tu
+dispositivo cuando los descargas. Volver a importar un PDF puede restituir
+movimientos que hayas borrado de la tabla.
 
 ## Contrato de salida
 
