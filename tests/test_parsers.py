@@ -1,0 +1,238 @@
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import pandas as pd
+import pytest
+
+from movements import COLUMNS, consolidate, totals
+from parsers import ParseError, parse_bnb, parse_yasta
+from parsers.bnb_parser import _table_records as bnb_tables
+from parsers.common import parse_amount
+from parsers.yasta_parser import _table_records as yasta_tables
+from tests.pdf_factory import bnb_section_stream, make_pdf, make_pdf_streams
+
+
+def test_yasta_text_fallback_multiline_and_multiple_pages():
+    raw = make_pdf([
+        ["Billetera Movil Yasta", "FECHA HORA DESCRIPCIÓN TIPO MONTO",
+         "19/5/2026 21:50:35 Transferencia recibida CRÉDITO 1,055.00", "Motivo: Caja chica",
+         "La información del extracto está sujeta a verificación de la Billetera Yasta", "Página 1 de 2"],
+        ["Billetera Movil Yasta", "FECHA HORA DESCRIPCIÓN TIPO MONTO",
+         "22/5/2026 09:29:13 Transferencia QR DÉBITO -15.00", "Motivo: Libreria", "Página 2 de 2"],
+    ])
+    df = parse_yasta(raw)
+    assert list(df.columns) == COLUMNS
+    assert df["fecha"].tolist() == ["2026-05-19 21:50:35", "2026-05-22 09:29:13"]
+    assert df["tipo"].tolist() == ["INGRESO", "EGRESO"]
+    assert df["monto"].tolist() == [1055.0, 15.0]
+    assert df["origen"].tolist() == ["YASTA", "YASTA"]
+    assert df.iloc[0]["glosa"] == "Transferencia recibida Motivo: Caja chica"
+    assert df.iloc[1]["glosa"] == "Transferencia QR Motivo: Libreria"
+
+
+def test_yasta_tables_support_separate_hour_and_wrapped_description():
+    class Page:
+        def extract_tables(self):
+            return [[["FECHA", "HORA", "DESCRIPCIÓN", "TIPO", "MONTO"],
+                     ["19/5/2026", "21:50:35", "Transferencia\nMotivo: Prueba", "CRÉDITO", "55.00"]]]
+    assert yasta_tables(Page()) == [{"fecha": "2026-05-19 21:50:35", "glosa": "Transferencia Motivo: Prueba",
+                                     "tipo": "INGRESO", "monto": 55.0, "origen": "YASTA"}]
+
+
+def test_bnb_table_debit_credit_never_uses_balance():
+    class Page:
+        def extract_tables(self):
+            return [[["Fecha", "Glosa", "Débito", "Crédito", "Saldo"],
+                     ["03/11/2026", "Pago", "1.234,56", "0,00", "25.000,00"],
+                     ["03/11/2026", "Abono", "-", "75,00", "25.075,00"]]]
+    rows = bnb_tables(Page())
+    assert [r["monto"] for r in rows] == [1234.56, 75.0]
+    assert [r["tipo"] for r in rows] == ["EGRESO", "INGRESO"]
+    assert rows[0]["fecha"] == "2026-11-03"
+
+
+def test_bnb_text_and_optional_hour():
+    df = parse_bnb(make_pdf([["BANCO NACIONAL DE BOLIVIA", "03/11/2026 10:12:34 Pago DÉBITO 25,50",
+                             "03/11/2026 Depósito CRÉDITO 100.00"]]))
+    assert df["fecha"].tolist() == ["2026-11-03 10:12:34", "2026-11-03"]
+    assert totals(df) == (100.0, 25.5, 74.5)
+
+
+def test_bnb_positioned_sections_multiline_and_ignored_columns():
+    raw = make_pdf_streams([
+        bnb_section_stream("Depósitos", "Créditos", [("03/10/2026", "11:26", "ABONO EN CUENTA\nCuenta Origen: 123. Nombre: Prueba", "90.00")]),
+        bnb_section_stream("Retiros", "Débitos", [("05/10/2026", "13:08", "DEBITO INTERBANCARIO\nCuenta Destino: 456.\nAdicional: Compra", "30.50")]),
+    ])
+    df = parse_bnb(raw)
+    assert df["fecha"].tolist() == ["2026-10-03 11:26:00", "2026-10-05 13:08:00"]
+    assert df["tipo"].tolist() == ["INGRESO", "EGRESO"]
+    assert df["glosa"].tolist() == ["ABONO EN CUENTA Cuenta Origen: 123. Nombre: Prueba",
+                                   "DEBITO INTERBANCARIO Cuenta Destino: 456. Adicional: Compra"]
+    assert totals(df) == (90.0, 30.5, 59.5)
+    assert not df["glosa"].str.contains("IGNORAR_REF|XYZ123").any()
+
+
+def test_bnb_both_sections_on_same_page():
+    deposit = bnb_section_stream("Depósitos", "Créditos", [("03/10/2026", "11:26", "ABONO", "90.00")])
+    withdrawal = bnb_section_stream("Retiros", "Débitos", [("05/10/2026", "13:08", "PAGO", "30.50")], offset=220)
+    df = parse_bnb(make_pdf_streams([deposit + b"\n" + withdrawal]))
+    assert totals(df) == (90.0, 30.5, 59.5)
+
+
+@pytest.mark.parametrize("repeat_header", [False, True])
+def test_bnb_sections_continue_across_pages_without_repeated_title(repeat_header):
+    pages = [
+        bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "10:01", "INGRESO UNO", "10.00")],
+                           show_total=False, footer="Página 1 de 5"),
+        bnb_section_stream("", "Créditos", [("02/10/2026", "10:02", "INGRESO DOS", "20.00")],
+                           show_header=repeat_header, show_total=False, footer="Página 2 de 5"),
+        bnb_section_stream("Depósitos (continuación)", "Créditos", [("03/10/2026", "10:03", "INGRESO TRES", "30.00")],
+                           show_header=repeat_header, footer="Página 3 de 5"),
+        bnb_section_stream("Retiros", "Débitos", [("04/10/2026", "10:04", "EGRESO UNO", "4.00")],
+                           show_total=False, footer="Página 4 de 5"),
+        bnb_section_stream("", "Débitos", [("05/10/2026", "10:05", "EGRESO DOS", "5.00")],
+                           show_header=repeat_header, footer="Página 5 de 5"),
+    ]
+    df = parse_bnb(make_pdf_streams(pages))
+    assert df["glosa"].tolist() == ["INGRESO UNO", "INGRESO DOS", "INGRESO TRES", "EGRESO UNO", "EGRESO DOS"]
+    assert df["tipo"].tolist() == ["INGRESO"] * 3 + ["EGRESO"] * 2
+    assert totals(df) == (60.0, 9.0, 51.0)
+
+
+def test_bnb_section_switch_on_continuation_page_without_deposit_total():
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "10:01", "INGRESO UNO", "10.00")],
+                               show_total=False)
+    continued = bnb_section_stream("", "Créditos", [("02/10/2026", "10:02", "INGRESO DOS", "20.00")],
+                                   show_header=False, show_total=False)
+    withdrawal = bnb_section_stream("Retiros", "Débitos", [("03/10/2026", "10:03", "EGRESO UNO", "3.00")], offset=220)
+    df = parse_bnb(make_pdf_streams([first, continued + b"\n" + withdrawal]))
+    assert df["tipo"].tolist() == ["INGRESO", "INGRESO", "EGRESO"]
+    assert totals(df) == (30.0, 3.0, 27.0)
+
+
+def test_bnb_section_header_mismatch_on_continuation_page_rejected():
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "10:01", "INGRESO", "10.00")], show_total=False)
+    wrong = bnb_section_stream("", "Débitos", [("02/10/2026", "10:02", "PAGO", "2.00")])
+    with pytest.raises(ParseError, match="Página 2.*incompatible"):
+        parse_bnb(make_pdf_streams([first, wrong]))
+
+
+def test_bnb_total_closes_section_and_prevents_stray_rows_on_next_page():
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "10:01", "INGRESO", "10.00")])
+    stray = bnb_section_stream("", "Créditos", [("02/10/2026", "10:02", "FUERA DE SECCION", "2.00")],
+                               show_header=False, show_total=False)
+    with pytest.raises(ParseError, match="Página 2"):
+        parse_bnb(make_pdf_streams([first, stray]))
+
+
+def test_bnb_section_and_header_must_agree():
+    raw = make_pdf_streams([bnb_section_stream("Retiros", "Créditos", [("03/10/2026", "11:26", "PAGO", "90.00")])])
+    with pytest.raises(ParseError, match="incompatible"):
+        parse_bnb(raw)
+
+
+def test_bnb_summary_mismatch_rejects_partial_statement():
+    raw = make_pdf([["BNB", "Total de créditos 100.00", "03/11/2026 Abono CRÉDITO 90.00"]])
+    with pytest.raises(ParseError, match="no coinciden"):
+        parse_bnb(raw)
+
+
+def test_bnb_section_total_checked_without_account_summary():
+    raw = make_pdf([["BNB", "03/11/2026 Abono CRÉDITO 90.00", "Total depósitos 100.00"]])
+    with pytest.raises(ParseError, match="no coinciden"):
+        parse_bnb(raw)
+
+
+def test_bnb_blank_page_does_not_close_active_section():
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "10:01", "PRIMERO", "10.00")], show_total=False)
+    last = bnb_section_stream("", "Créditos", [("02/10/2026", "10:02", "ULTIMO", "20.00")], show_header=False)
+    df = parse_bnb(make_pdf_streams([first, b"", last]))
+    assert df["glosa"].tolist() == ["PRIMERO", "ULTIMO"]
+    assert totals(df) == (30.0, 0.0, 30.0)
+
+
+def test_different_banks_accounts_and_months_consolidated_together():
+    first = parse_bnb(make_pdf([["BNB Cuenta 123", "03/10/2026 11:26 Abono CRÉDITO 90.00"]]))
+    second = parse_bnb(make_pdf([["BNB Cuenta 456", "04/11/2026 12:30 Pago DÉBITO 25.00"]]))
+    yasta = parse_yasta(make_pdf([["Billetera Yasta", "19/5/2026 21:50:35 Transferencia CRÉDITO 55.00"]]))
+    combined = consolidate(consolidate(first, second), yasta)
+    assert len(combined) == 3
+    assert set(combined["origen"]) == {"BNB", "YASTA"}
+    assert totals(combined) == (145.0, 25.0, 120.0)
+    assert len(consolidate(combined, first)) == 3
+
+
+@pytest.mark.parametrize("parser,brand", [(parse_yasta, "BNB"), (parse_bnb, "Yasta")])
+def test_wrong_bank_rejected(parser, brand):
+    with pytest.raises(ParseError, match="origen seleccionado"):
+        parser(make_pdf([[brand]]))
+
+
+@pytest.mark.parametrize("raw", [b"not a pdf", b"%PDF-1.4 corrupt"])
+def test_invalid_pdf(raw):
+    with pytest.raises(ParseError):
+        parse_yasta(raw)
+
+
+def test_no_text_requires_ocr():
+    with pytest.raises(ParseError, match="OCR"):
+        parse_yasta(make_pdf([[]]))
+
+
+@pytest.mark.parametrize("line", ["22/5/2026 09:29:13 Pago DÉBITO ???", "22/5/2026 Pago DÉBITO 10.00",
+                                 "32/5/2026 09:29:13 Pago DÉBITO 10.00"])
+def test_malformed_movement_rejects_entire_pdf(line):
+    raw = make_pdf([["Billetera Yasta", "19/5/2026 21:50:35 Abono CRÉDITO 55.00", line]])
+    with pytest.raises(ParseError, match="Página 1"):
+        parse_yasta(raw)
+
+
+@pytest.mark.parametrize("text,expected", [("1,234.56", 1234.56), ("-1.234,56", 1234.56),
+                                            ("15,50", 15.5), ("986.05", 986.05), ("1,000", 1000.0)])
+def test_amount_formats(text, expected):
+    assert parse_amount(text) == expected
+
+
+@pytest.mark.parametrize("text", ["1,23.45", "1.23.45,67", "1,234.567", "--15.00"])
+def test_invalid_amount_grouping_rejected(text):
+    with pytest.raises(ParseError):
+        parse_amount(text)
+
+
+@pytest.mark.skipif(not os.getenv("YASTA_SAMPLE_PDF"), reason="PDF real opcional, no incluido en el proyecto")
+def test_actual_yasta_sample_table_and_text_fallback():
+    raw = Path(os.environ["YASTA_SAMPLE_PDF"]).read_bytes()
+    table_df = parse_yasta(raw)
+    with patch("parsers.yasta_parser._table_records", return_value=[]):
+        text_df = parse_yasta(raw)
+    pd.testing.assert_frame_equal(table_df, text_df)
+    assert len(table_df) == 4
+    assert totals(table_df) == (1041.05, 1001.05, 40.0)
+    assert table_df["fecha"].tolist() == ["2026-05-19 21:50:35", "2026-05-22 09:29:13",
+                                         "2026-05-29 09:29:42", "2026-05-29 11:19:32"]
+    assert all("\n" not in glosa for glosa in table_df["glosa"])
+
+
+@pytest.mark.skipif(not os.getenv("BNB_SAMPLE_PDF"), reason="PDF real opcional, no incluido en el proyecto")
+def test_actual_bnb_sample():
+    df = parse_bnb(Path(os.environ["BNB_SAMPLE_PDF"]).read_bytes())
+    assert list(df.columns) == COLUMNS
+    assert len(df) == 36
+    assert df["tipo"].value_counts().to_dict() == {"EGRESO": 26, "INGRESO": 10}
+    assert totals(df) == (1328.08, 1753.73, -425.65)
+    assert df.iloc[0]["fecha"] == "2026-10-13 11:26:00"
+    assert df.iloc[-1]["fecha"] == "2026-10-31 23:59:00"
+    assert df.iloc[-1]["glosa"] == "RETENCION IVA - LPZ/AGENCIA CENTRAL"
+    assert "Pago pr st" not in df.iloc[0]["glosa"]  # Referencia excluida.
+    assert not df["glosa"].str.contains(r"1P\w+").any()  # Comprobantes excluidos.
+    assert df["origen"].eq("BNB").all()
+
+
+@pytest.mark.skipif(not (os.getenv("BNB_SAMPLE_PDF") and os.getenv("YASTA_SAMPLE_PDF")), reason="PDFs reales opcionales")
+def test_actual_bnb_and_yasta_combined():
+    bnb = parse_bnb(Path(os.environ["BNB_SAMPLE_PDF"]).read_bytes())
+    yasta = parse_yasta(Path(os.environ["YASTA_SAMPLE_PDF"]).read_bytes())
+    combined = consolidate(bnb, yasta)
+    assert len(combined) == 40
+    assert totals(combined) == (2369.13, 2754.78, -385.65)
