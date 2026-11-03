@@ -148,7 +148,7 @@ def main() -> None:
     results = st.session_state["load_results"]
     if results:
         with st.expander("Resultado de la última carga", expanded=True):
-            st.dataframe(pd.DataFrame(results), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame(results), hide_index=True, use_container_width=True)
             if any(item["estado"] == "Error" for item in results):
                 st.warning("Algunos archivos no se añadieron. Revisa el detalle de cada error.")
             else:
@@ -200,7 +200,7 @@ def render_consolidation() -> None:
         st.session_state["editor_snapshot"] = snapshot
     st.data_editor(
         snapshot["data"], key=editor_key, on_change=save_edits, args=(editor_key, visible.index.tolist()),
-        hide_index=True, num_rows="fixed", width="stretch", disabled=["fecha", "origen"],
+        hide_index=True, num_rows="fixed", use_container_width=True, disabled=["fecha", "origen"],
         column_config={
             "eliminar": st.column_config.CheckboxColumn("Eliminar", help="Marca los movimientos que deseas quitar y pulsa Eliminar seleccionados.", width="small", required=True),
             "fecha": st.column_config.TextColumn("Fecha / hora", width="medium"),
@@ -225,10 +225,10 @@ def render_consolidation() -> None:
         st.session_state["download_payloads"] = payloads
     csv_col, excel_col = st.columns(2)
     csv_col.download_button("Descargar CSV", data=payloads["csv"], file_name="consolidado.csv",
-                            mime="text/csv", disabled=export_df.empty, width="stretch", on_click="ignore")
+                            mime="text/csv", disabled=export_df.empty, use_container_width=True)
     excel_col.download_button("Descargar Excel (.xlsx)", data=payloads["xlsx"], file_name="consolidado.xlsx",
                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                              disabled=export_df.empty, width="stretch", on_click="ignore")
+                              disabled=export_df.empty, use_container_width=True)
 
 
 if __name__ == "__main__":

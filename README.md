@@ -16,6 +16,31 @@ Abre la dirección local que muestre Streamlit (normalmente
 http://localhost:8501). Si el entorno `.venv` ya tiene las dependencias,
 solo necesitas el último comando.
 
+## Versión y despliegue en Streamlit Community Cloud
+
+El proyecto declara **Streamlit 1.42.0** en `requirements.txt`. Los anchos de
+tablas y descargas usan `use_container_width=True`, compatible con esa versión;
+`width="stretch"` y `on_click="ignore"` en las descargas requieren versiones
+posteriores. Mantén la misma versión de Streamlit al probar y al desplegar:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -c "import streamlit; print(streamlit.__version__)"
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Para publicar una corrección, sube `app.py` actualizado al repositorio y rama
+que utiliza tu aplicación de Community Cloud. Si cambias las dependencias,
+sube también `requirements.txt`. Espera a que termine la actualización y revisa
+los logs del despliegue. Si hace falta reiniciar, utiliza **Manage app → Reboot
+app**; recuerda descargar antes los datos de tu sesión en memoria.
+
+Si el navegador muestra `Failed to fetch dynamically imported module` después
+de actualizar Streamlit, prueba a recargar con **Ctrl+F5** o abrir una ventana
+privada para descartar recursos JavaScript antiguos en la caché. Si también
+ocurre en una sesión nueva, revisa los logs y la conexión: ese mensaje de carga
+por sí solo no demuestra un error en los parsers de los bancos.
+
 ## Uso
 
 1. Selecciona **BNB** o **YASTA**. La carga de archivos permanece deshabilitada

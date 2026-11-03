@@ -162,29 +162,24 @@ def test_no_bank_cannot_process_upload(monkeypatch):
     assert state["load_results"] == []
 
 
-def test_ui_processes_yasta_then_bnb_in_same_consolidation():
+def test_ui_processes_yasta_then_bnb_in_same_consolidation(monkeypatch):
     # AppTest cannot upload files directly. Replace only the file picker;
     # exercise the real bank selector, processing button, callbacks and editor.
-    at = AppTest.from_string('''
-from io import BytesIO
-from unittest.mock import patch
-import streamlit as st
-from app import main
-from tests.pdf_factory import make_pdf
+    import streamlit as st
 
-def pick_file(*args, **kwargs):
-    bank = st.session_state.get("upload_origin")
-    if bank is None:
-        return []
-    lines = {"YASTA": ["Billetera Yasta", "19/5/2026 21:50:35 Abono CRÉDITO 55.00"],
-             "BNB": ["BNB", "03/10/2026 11:26 Pago DÉBITO 20.00"]}
-    uploaded = BytesIO(make_pdf([lines[bank]]))
-    uploaded.name = bank + ".pdf"
-    return [uploaded]
+    def pick_file(*args, **kwargs):
+        bank = st.session_state.get("upload_origin")
+        if bank is None:
+            return []
+        lines = {"YASTA": ["Billetera Yasta", "19/5/2026 21:50:35 Abono CRÉDITO 55.00"],
+                 "BNB": ["BNB", "03/10/2026 11:26 Pago DÉBITO 20.00"]}
+        uploaded = BytesIO(make_pdf([lines[bank]]))
+        uploaded.name = bank + ".pdf"
+        return [uploaded]
 
-with patch("app.st.file_uploader", side_effect=pick_file):
-    main()
-''').run()
+    monkeypatch.setattr(st, "file_uploader", pick_file)
+    at = AppTest.from_file(APP).run()
+    assert not at.exception
     at.radio(key="upload_origin").set_value("YASTA").run()
     at.button(key="process_uploads_button").click().run()
     assert not at.exception
