@@ -18,10 +18,10 @@ solo necesitas el último comando.
 
 ## Versión y despliegue en Streamlit Community Cloud
 
-El proyecto declara **Streamlit 1.42.0** en `requirements.txt`. Los anchos de
-tablas y descargas usan `use_container_width=True`, compatible con esa versión;
-`width="stretch"` y `on_click="ignore"` en las descargas requieren versiones
-posteriores. Mantén la misma versión de Streamlit al probar y al desplegar:
+El proyecto declara **Streamlit 1.66.1** en `requirements.txt`, la versión usada
+para validar la interfaz. Se fija una versión concreta para que el despliegue
+instale el mismo Streamlit que las pruebas. Mantén esa versión al probar y al
+desplegar:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -40,6 +40,13 @@ de actualizar Streamlit, prueba a recargar con **Ctrl+F5** o abrir una ventana
 privada para descartar recursos JavaScript antiguos en la caché. Si también
 ocurre en una sesión nueva, revisa los logs y la conexión: ese mensaje de carga
 por sí solo no demuestra un error en los parsers de los bancos.
+
+Si también falla en incógnito, comprueba con otra conexión y revisa los logs de
+Community Cloud. La actualización desde Streamlit 1.42.0 a 1.66.1 renueva los
+recursos del frontend, pero no garantiza resolver una interrupción de red o
+del servicio de alojamiento. Tras subir el cambio de `requirements.txt`, espera
+a que termine la instalación y confirma en los logs que se instaló **1.66.1**.
+Reiniciar conservando `streamlit==1.42.0` no actualiza esa dependencia.
 
 ## Uso
 
