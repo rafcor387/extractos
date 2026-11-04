@@ -108,6 +108,33 @@ def test_multiple_uploads_deduplication_errors_and_clear(monkeypatch):
     assert state["upload_revision"] == 1
 
 
+def test_bnb_validation_detail_and_failed_import_preserve_consolidation(monkeypatch):
+    import app
+
+    state = {}
+    monkeypatch.setattr(app.st, "session_state", state)
+    app.initialize_state()
+    valid = BytesIO(make_pdf([["BNB", "Total de créditos 10.00", "03/11/2026 Abono CRÉDITO 10.00"]]))
+    valid.name = "completo.pdf"
+    invalid = BytesIO(make_pdf([["BNB", "Total de débitos 100.00", "03/11/2026 Pago DÉBITO 90.00"]]))
+    invalid.name = "incompleto.pdf"
+    app.process_uploads([valid, invalid], "BNB")
+    assert len(state["df_movimientos"]) == 1
+    assert "coinciden" in state["load_results"][0]["detalle"]
+    assert state["load_results"][1]["estado"] == "Error"
+    assert "-10.00" in state["load_results"][1]["detalle"]
+
+
+def test_load_error_is_readable_below_the_results_table():
+    at = AppTest.from_file(APP)
+    detail = "Se leyeron 90.00; se esperaban 100.00; diferencia -10.00. Lectura por página: pág. 3."
+    at.session_state["load_results"] = [{"archivo": "incompleto.pdf", "origen": "BNB", "estado": "Error",
+                                        "extraídos": 0, "añadidos": 0, "duplicados": 0, "detalle": detail}]
+    at.run()
+    assert not at.exception
+    assert at.error[0].value == "incompleto.pdf: " + detail
+
+
 def test_selected_bank_routes_parser_and_next_load_combines_banks(monkeypatch):
     import app
 

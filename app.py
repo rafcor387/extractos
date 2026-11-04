@@ -104,7 +104,8 @@ def process_uploads(files: list, origin: str) -> None:
             st.session_state["df_movimientos"] = combined
             st.session_state["rows_to_delete"] = set()
             results.append({"archivo": uploaded.name, "origen": origin, "estado": "Procesado", "extraídos": len(incoming),
-                            "añadidos": added, "duplicados": len(incoming) - added, "detalle": ""})
+                            "añadidos": added, "duplicados": len(incoming) - added,
+                            "detalle": incoming.attrs.get("bnb_validation", "")})
         except (ParseError, ValueError) as exc:
             results.append({"archivo": uploaded.name, "origen": origin, "estado": "Error", "extraídos": 0,
                             "añadidos": 0, "duplicados": 0, "detalle": str(exc)})
@@ -163,6 +164,9 @@ def main() -> None:
             st.dataframe(pd.DataFrame(results), hide_index=True, use_container_width=True)
             if any(item["estado"] == "Error" for item in results):
                 st.warning("Algunos archivos no se añadieron. Revisa el detalle de cada error.")
+                for item in results:
+                    if item["estado"] == "Error":
+                        st.error(f"{item['archivo']}: {item['detalle']}")
             else:
                 st.success(f"Se añadieron {sum(item['añadidos'] for item in results)} movimientos. Se omitieron {sum(item['duplicados'] for item in results)} duplicados exactos.")
 

@@ -118,14 +118,119 @@ def test_bnb_note_after_last_row_does_not_become_a_movement():
     assert totals(df) == (0.0, 30.5, -30.5)
 
 
-def test_bnb_missing_row_separator_rejects_statement():
+def test_bnb_broken_separator_uses_clear_whitespace_between_complete_rows():
     body = bnb_section_stream("Retiros", "Débitos", [
         ("03/10/2026", "11:26", "PAGO UNO", "30.50"),
         ("04/10/2026", "11:26", "PAGO DOS", "10.00"),
     ], continuous_lines=True)
     body = body.replace(b"40 632 m 580 632 l S", b"")
-    with pytest.raises(ParseError, match="Página 1.*separe sus registros"):
+    df = parse_bnb(make_pdf_streams([body]))
+    assert df["glosa"].tolist() == ["PAGO UNO", "PAGO DOS"]
+    assert totals(df) == (0.0, 40.5, -40.5)
+
+
+@pytest.mark.parametrize("filled", [False, True])
+def test_bnb_tall_rows_lowered_titles_and_staggered_headers(filled):
+    descriptions = ["PAGO LARGO\n" + "\n".join(f"Detalle {n}" for n in range(8)),
+                    "PAGO CORTO", "OTRO PAGO\n" + "\n".join(f"Adicional {n}" for n in range(10))]
+    body = bnb_section_stream("Retiros", "Débitos", [
+        ("03/10/2026", "11:26", descriptions[0], "30.50"),
+        ("04/10/2026", "12:10", descriptions[1], "10.00"),
+        ("05/10/2026", "13:20", descriptions[2], "20.00"),
+    ], offset=150, continuous_lines=True, row_heights=[110, 42, 140],
+        filled_separators=filled, header_gap=12, header_stagger=8)
+    df = parse_bnb(make_pdf_streams([body]))
+    assert df["glosa"].tolist() == [" ".join(value.split()) for value in descriptions]
+    assert df["fecha"].tolist() == ["2026-10-03 11:26:00", "2026-10-04 12:10:00", "2026-10-05 13:20:00"]
+    assert totals(df) == (0.0, 60.5, -60.5)
+
+
+def test_bnb_date_at_start_of_description_line_is_not_another_row():
+    body = bnb_section_stream("Depósitos", "Créditos", [
+        ("03/10/2026", "11:26", "ABONO\n01/10/2026 fecha del comprobante\nDetalle final", "90.00"),
+    ], row_heights=[70])
+    df = parse_bnb(make_pdf_streams([body]))
+    assert len(df) == 1
+    assert df.iloc[0]["glosa"] == "ABONO 01/10/2026 fecha del comprobante Detalle final"
+
+
+def test_bnb_new_page_header_recalibrates_columns_before_counting_dates():
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "11:26", "PRIMERO", "10.00")])
+    second = bnb_section_stream("Retiros", "Débitos", [("02/10/2026", "12:30", "PAGO\n01/10/2026 comprobante", "20.00")], row_heights=[70])
+    second = b"q 0.5 0 0 0.5 0 0 cm\n" + second + b"\nQ"
+    df = parse_bnb(make_pdf_streams([first, second]))
+    assert df["glosa"].tolist() == ["PRIMERO", "PAGO 01/10/2026 comprobante"]
+    assert totals(df) == (10.0, 20.0, -10.0)
+
+
+def test_bnb_continuation_with_no_top_border_keeps_full_description():
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/10/2026", "11:26", "PRIMERO", "10.00")], show_total=False)
+    continued = bnb_section_stream("", "Créditos", [("02/10/2026", "12:30", "SEGUNDO\nDetalle arriba de la fecha\nDetalle final", "20.00")],
+                                   show_header=False, row_heights=[80], continuous_lines=True)
+    continued = continued.replace(b"40 674 m 580 674 l S", b"")
+    df = parse_bnb(make_pdf_streams([first, continued]))
+    assert df["glosa"].tolist() == ["PRIMERO", "SEGUNDO Detalle arriba de la fecha Detalle final"]
+    assert totals(df) == (30.0, 0.0, 30.0)
+
+
+def test_bnb_three_column_alias_headers_use_the_section_keyword():
+    body = bnb_section_stream("Detalle de Retiros", "Débitos", [("03/10/2026", "11:26", "PAGO COMPLETO", "30.50")],
+                              continuous_lines=True)
+    omitted = ("(Referencia)", "(Comprobante)", "(ITF)", "(IGNORAR_REF)", "(XYZ123)", "(0.00)")
+    body = b"\n".join(line for line in body.splitlines() if not any(value.encode() in line for value in omitted))
+    body = body.replace("(Descripción)".encode("cp1252"), b"(Concepto)").replace("(Débitos)".encode("cp1252"), b"(Importe)")
+    df = parse_bnb(make_pdf_streams([body]))
+    assert df["glosa"].tolist() == ["PAGO COMPLETO"]
+    assert totals(df) == (0.0, 30.5, -30.5)
+
+
+def test_bnb_right_aligned_amount_heading_does_not_cut_digits():
+    body = bnb_section_stream("Retiros", "Débitos", [("03/10/2026", "11:26", "PAGO", "1,230.50")], continuous_lines=True)
+    body = body.replace("530 680 Td (Débitos)".encode("cp1252"), "550 680 Td (Débitos)".encode("cp1252"))
+    df = parse_bnb(make_pdf_streams([body]))
+    assert df["monto"].tolist() == [1230.5]
+    assert df["glosa"].tolist() == ["PAGO"]
+
+
+def test_bnb_overlapping_rows_are_rejected_even_when_amounts_would_add_up():
+    body = bnb_section_stream("Retiros", "Débitos", [
+        ("03/10/2026", "11:26", "PAGO UNO\nDetalle A\nDetalle B\nDetalle C\nDetalle D", "30.50"),
+        ("04/10/2026", "11:26", "PAGO DOS", "10.00"),
+    ], continuous_lines=True)
+    body = body.replace(b"40 632 m 580 632 l S", b"")
+    with pytest.raises(ParseError, match="Página 1.*separar con certeza"):
         parse_bnb(make_pdf_streams([body]))
+
+
+def test_bnb_incomplete_native_row_reports_section_date_and_page():
+    body = bnb_section_stream("Retiros", "Débitos", [("03/10/2026", "11:26", "PAGO", "???")])
+    with pytest.raises(ParseError, match="Página 1: Retiros, movimiento 1.*03/10/2026.*monto"):
+        parse_bnb(make_pdf_streams([body]))
+
+
+def test_bnb_summary_mismatch_includes_expected_actual_difference_and_page_counts():
+    raw = make_pdf([["BNB", "Total de débitos 100.00", "03/11/2026 Pago DÉBITO 90.00"]])
+    with pytest.raises(ParseError) as error:
+        parse_bnb(raw)
+    message = str(error.value)
+    assert "90.00" in message and "100.00" in message and "-10.00" in message
+    assert "pág. 1: 1 movimientos" in message
+
+
+def test_bnb_repeated_totals_cannot_silently_bypass_validation():
+    raw = make_pdf([["BNB", "Total de créditos 100.00", "03/11/2026 Abono CRÉDITO 90.00", "Total de créditos 100.00"]])
+    with pytest.raises(ParseError, match="no coinciden"):
+        parse_bnb(raw)
+    valid = make_pdf([["BNB", "Total de créditos 90.00", "03/11/2026 Abono CRÉDITO 90.00", "Total de créditos 90.00"]])
+    assert "coinciden" in parse_bnb(valid).attrs["bnb_validation"]
+
+
+def test_bnb_total_with_no_value_does_not_consume_a_date_on_the_next_page():
+    raw = make_pdf([["BNB", "03/11/2026 Abono CRÉDITO 10.00", "Total depósitos"],
+                    ["04/11/2026 Otro abono CRÉDITO 20.00"]])
+    df = parse_bnb(raw)
+    assert totals(df) == (30.0, 0.0, 30.0)
+    assert "no incluye totales comparables" in df.attrs["bnb_validation"]
 
 
 @pytest.mark.parametrize("repeat_header", [False, True])

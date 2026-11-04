@@ -118,7 +118,12 @@ volver a cargar el PDF original puede añadir la versión original del registro.
 - `parsers/bnb_parser.py`: lectura por secciones **Depósitos** y **Retiros**,
   validada con el extracto BNB de octubre de 2026 y variaciones sintéticas.
   Lee cada registro entre sus separadores horizontales y deduce las columnas
-  desde los encabezados; admite líneas continuas o divididas por columna.
+  desde los encabezados; admite líneas continuas, divididas, dobles o gruesas.
+  Los títulos pueden aparecer a distintas alturas y las filas tener alturas
+  diferentes. Los encabezados pueden estar desalineados; también se reconocen
+  Concepto/Glosa y Monto/Importe dentro de una sección identificada.
+  Si falta una línea, utiliza un espacio en blanco claro entre registros completos;
+  si la separación es ambigua, informa la página y las fechas afectadas.
   Depósitos/Créditos se convierten en `INGRESO` y Retiros/Débitos en `EGRESO`.
   Une fecha y hora aunque estén en líneas diferentes y conserva la descripción
   completa; omite referencia, comprobante e ITF. Comprueba los totales extraídos
@@ -128,6 +133,10 @@ volver a cargar el PDF original puede añadir la versión original del registro.
   cambia a la siguiente; también admite ambas secciones en la misma página.
   Conserva la geometría de las columnas para una sección nueva sin encabezado,
   cambiando el tipo según su título. Las notas fuera de las filas no se importan.
+  Cuenta las fechas en su columna, sin confundir fechas escritas en la glosa.
+  En cada carga indica cuántos depósitos/retiros se leyeron y si se comprobaron
+  los totales. Una diferencia muestra importe leído, esperado, diferencia y
+  conteo por página; el mensaje completo aparece debajo de la tabla de resultados.
   Mantiene la alternativa genérica de tablas o texto para otros diseños.
 - `parsers/common.py`: alias de encabezados en `header_map`, fechas, conversión
   de montos y validación básica de la marca de la entidad. Esta validación no
