@@ -36,7 +36,8 @@ def bnb_section_stream(title: str, amount_header: str, rows: list[tuple[str, str
                        offset: int = 0, show_header: bool = True, show_total: bool = True,
                        footer: str = "", continuous_lines: bool = False,
                        row_heights: list[int] | None = None, filled_separators: bool = False,
-                       header_gap: int = 0, header_stagger: int = 0) -> bytes:
+                       header_gap: int = 0, header_stagger: int = 0,
+                       columns: tuple[float, ...] = (40, 120, 360, 420, 490, 530, 580)) -> bytes:
     """Sección BNB realista: separadores horizontales, fecha/hora en dos líneas."""
     commands = []
 
@@ -46,9 +47,9 @@ def bnb_section_stream(title: str, amount_header: str, rows: list[tuple[str, str
 
     def separator(y: float) -> None:
         if filled_separators:
-            commands.append(f"40 {y - offset - 3} 540 6 re f")
+            commands.append(f"{columns[0]} {y - offset - 3} {columns[-1] - columns[0]} 6 re f")
             return
-        xs = [40, 580] if continuous_lines else [40, 120, 360, 420, 490, 530, 580]
+        xs = [columns[0], columns[-1]] if continuous_lines else columns
         for left, right in zip(xs, xs[1:]):
             commands.append(f"{left} {y - offset} m {right} {y - offset} l S")
 
@@ -56,7 +57,7 @@ def bnb_section_stream(title: str, amount_header: str, rows: list[tuple[str, str
     if title:
         text(40, 710, title)
     if show_header:
-        for x, label in zip([40, 120, 360, 420, 490, 530], ["Fecha Hora", "Descripción", "Referencia", "Comprobante", "ITF", amount_header]):
+        for x, label in zip(columns, ["Fecha Hora", "Descripción", "Referencia", "Comprobante", "ITF", amount_header]):
             text(x, 680 + header_gap - (header_stagger if label == "Descripción" else 0), label)
     separator(674)
     heights = row_heights or [42] * len(rows)
@@ -64,14 +65,14 @@ def bnb_section_stream(title: str, amount_header: str, rows: list[tuple[str, str
     for i, (date, hour, description, amount) in enumerate(rows):
         y = 660 - used_height
         centered = y - (heights[i] - 42) / 2
-        text(40, centered, date)
-        text(40, centered - 10, hour)
+        text(columns[0], centered, date)
+        text(columns[0], centered - 10, hour)
         for line, part in enumerate(description.split("\n")):
-            text(120, y - line * 10, part)
-        text(360, centered, "IGNORAR_REF")
-        text(420, centered, "XYZ123")
-        text(490, centered, "0.00")
-        text(540, centered, amount)
+            text(columns[1], y - line * 10, part)
+        text(columns[2], centered, "IGNORAR_REF")
+        text(columns[3], centered, "XYZ123")
+        text(columns[4], centered, "0.00")
+        text(columns[5] + 10, centered, amount)
         separator(y - heights[i] + 14)
         used_height += heights[i]
     if show_total:

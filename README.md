@@ -127,6 +127,9 @@ volver a cargar el PDF original puede añadir la versión original del registro.
   Los títulos pueden aparecer a distintas alturas y las filas tener alturas
   diferentes. Los encabezados pueden estar desalineados; también se reconocen
   Concepto/Glosa y Monto/Importe dentro de una sección identificada.
+  Reconoce rótulos unidos por la extracción del PDF, como `FechaHora` o
+  `ComprobanteITFDébitos`, y recalibra las columnas de esa página. Esto evita
+  arrastrar columnas de Depósitos a Retiros y sumar dígitos del comprobante al monto.
   Si falta una línea, utiliza un espacio en blanco claro entre registros completos;
   si la separación es ambigua, informa la página y las fechas afectadas.
   Depósitos/Créditos se convierten en `INGRESO` y Retiros/Débitos en `EGRESO`.
@@ -182,6 +185,7 @@ Prueba opcional sobre el PDF original, sin copiarlo al proyecto:
 ```powershell
 $env:YASTA_SAMPLE_PDF = 'C:\Users\rafco\Downloads\yasta.pdf'
 $env:BNB_SAMPLE_PDF = 'C:\Users\rafco\Downloads\bnb.pdf'
+$env:BNB_SECOND_SAMPLE_PDF = 'C:\Users\rafco\Downloads\bnb2.pdf'
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 

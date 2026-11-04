@@ -192,6 +192,25 @@ def test_bnb_right_aligned_amount_heading_does_not_cut_digits():
     assert df["glosa"].tolist() == ["PAGO"]
 
 
+@pytest.mark.parametrize("amount_header,title", [("Débitos", "Retiros"), ("Créditos", "Depósitos")])
+@pytest.mark.parametrize("continuous_lines", [False, True])
+def test_bnb_joined_itf_amount_header_recalibrates_columns_on_new_page(amount_header, title, continuous_lines):
+    first = bnb_section_stream("Depósitos", "Créditos", [("01/09/2026", "10:00", "ABONO", "10.00")])
+    second = bnb_section_stream(title, amount_header, [("02/09/2026", "15:17", "MOVIMIENTO COMPLETO", "20.00")],
+                                columns=(40, 120, 360, 490, 543, 553, 600), continuous_lines=continuous_lines)
+    # En el segundo diseño los encabezados ITF y Débitos/Créditos se tocan.
+    # El monto se desplaza con su columna; reutilizar la primera geometría
+    # termina cortando el importe o mezclándolo con el comprobante.
+    second = second.replace(b"553 680 Td", b"556 680 Td")
+    second = second.replace(b"(Fecha Hora)", b"(FechaHora)")
+    second = second.replace(b"(XYZ123)", b"(1P12345674)")
+    second = b"\n".join(line for line in second.splitlines() if b"(0.00)" not in line)
+    df = parse_bnb(make_pdf_streams([first, second]))
+    assert df["monto"].tolist() == [10.0, 20.0]
+    assert df["tipo"].tolist() == ["INGRESO", "EGRESO" if title == "Retiros" else "INGRESO"]
+    assert df["glosa"].tolist() == ["ABONO", "MOVIMIENTO COMPLETO"]
+
+
 def test_bnb_indented_description_header_does_not_pollute_date_or_truncate_glosa():
     description = "DEBITO EN CUENTA\nCuenta Destino: Prueba"
     body = bnb_section_stream("Retiros", "Débitos", [("01/09/2026", "15:17", description, "30.50")])
@@ -447,6 +466,20 @@ def test_actual_bnb_sample():
     assert "Pago pr st" not in df.iloc[0]["glosa"]  # Referencia excluida.
     assert not df["glosa"].str.contains(r"1P\w+").any()  # Comprobantes excluidos.
     assert df["origen"].eq("BNB").all()
+
+
+@pytest.mark.skipif(not os.getenv("BNB_SECOND_SAMPLE_PDF"), reason="Segundo PDF BNB real opcional, no incluido en el proyecto")
+def test_actual_bnb_second_sample_joined_debit_header():
+    df = parse_bnb(Path(os.environ["BNB_SECOND_SAMPLE_PDF"]).read_bytes())
+    assert list(df.columns) == COLUMNS
+    assert len(df) == 20
+    assert df["tipo"].value_counts().to_dict() == {"INGRESO": 11, "EGRESO": 9}
+    assert totals(df) == (1043.5, 180.07, 863.43)
+    assert df.loc[df["tipo"] == "EGRESO", "monto"].tolist() == [20.0, 30.0, 14.0, 5.0, 6.0, 3.0, 1.0, 101.0, 0.07]
+    assert df.iloc[-1]["glosa"] == "RETENCION IVA - LPZ/AGENCIA CENTRAL"
+    assert df.iloc[11]["fecha"] == "2026-09-09 10:33:00"
+    assert df.iloc[11]["glosa"].startswith("DEBITO EN CUENTA (MOVIL) - BNB NET Cuenta Destino: ")
+    assert not df["glosa"].str.contains(r"1P\w+").any()
 
 
 @pytest.mark.skipif(not (os.getenv("BNB_SAMPLE_PDF") and os.getenv("YASTA_SAMPLE_PDF")), reason="PDFs reales opcionales")

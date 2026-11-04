@@ -126,9 +126,12 @@ def _text_gaps(page: Page, layout: TableLayout, top: float, bottom: float) -> li
 
 def _layout_headers(page: Page) -> list[dict]:
     """Localiza encabezados completos y deduce sus columnas sin posiciones fijas."""
-    dates = page.search(r"\bFecha\b", case=False)
+    # El PDF puede extraer FechaHoraDescripción y ComprobanteITFDébitos sin
+    # espacios. Buscar los rótulos por separado conserva sus coordenadas y
+    # permite recalibrar cada página, sin heredar columnas de otra sección.
+    dates = page.search(r"Fecha", case=False)
     descriptions = page.search(r"Descripci[oó]n|Glosa|Concepto|Detalle", case=False)
-    amounts = page.search(r"\b(?:Cr[eé]ditos?|D[eé]bitos?|Monto|Importe)\b", case=False)
+    amounts = page.search(r"Cr[eé]ditos?|D[eé]bitos?|Monto|Importe", case=False)
     titles = page.search(SECTION_TITLE, case=False)
     headers = []
     for date in dates:
@@ -170,7 +173,7 @@ def _layout_headers(page: Page) -> list[dict]:
             # Algunos PDFs dibujan una sola línea continua: sus extremos no
             # revelan columnas. En ese caso usamos los anclajes del encabezado.
             anchors = [description, amount]
-            for pattern in (r"Referencia|\bRef\.?", r"Comprobante", r"\bITF\b"):
+            for pattern in (r"Referencia|\bRef\.?", r"Comprobante", r"ITF"):
                 anchors.extend(hit for hit in page.search(pattern, case=False)
                                if description["x0"] < hit["x0"] < amount["x0"]
                                and abs(hit["top"] - date["top"]) <= _height(date) * 1.5)
