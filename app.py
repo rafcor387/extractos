@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -9,7 +12,7 @@ from movements import (
     ORIGINS, TYPES, apply_edits, consolidate, empty_movements,
     remove_movements, to_csv_bytes, to_excel_bytes, totals,
 )
-from parsers import ParseError, parse_bnb, parse_yasta
+from parsers import ParseError, parse_yasta
 
 MONTH_NAMES = ("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
@@ -30,6 +33,15 @@ def initialize_state() -> None:
     st.session_state.setdefault("upload_origin", None)
     st.session_state.setdefault("load_results", [])
     st.session_state.setdefault("rows_to_delete", set())
+    # La sesión conserva el informe incluso cuando Streamlit recarga el código.
+    # No presentar una lectura anterior como si se hubiera ejecutado de nuevo.
+    reader_source = Path(__file__).parent / "parsers" / "bnb_parser.py"
+    reader_signature = sha256(reader_source.read_bytes()).hexdigest()
+    previous_signature = st.session_state.get("bnb_reader_signature")
+    if previous_signature != reader_signature:
+        if any(item["origen"] == "BNB" for item in st.session_state["load_results"]):
+            st.session_state["bnb_results_outdated"] = True
+        st.session_state["bnb_reader_signature"] = reader_signature
 
 
 def clear_data() -> None:
@@ -37,6 +49,7 @@ def clear_data() -> None:
     st.session_state["editor_revision"] += 1
     st.session_state["upload_revision"] += 1
     st.session_state["load_results"] = []
+    st.session_state["bnb_results_outdated"] = False
     st.session_state["upload_origin"] = None
     st.session_state["filter_origin"] = "Todos"
     st.session_state["filter_type"] = "Todos"
@@ -92,12 +105,20 @@ def delete_selected_rows() -> None:
 
 
 def process_uploads(files: list, origin: str) -> None:
-    parser = {"BNB": parse_bnb, "YASTA": parse_yasta}[origin]
+    # Resolver el submódulo en cada carga evita conservar la función reexportada
+    # por parsers.__init__ cuando Streamlit vuelve a cargar solo bnb_parser.py.
+    if origin == "BNB":
+        from parsers.bnb_parser import parse_bnb as parser
+    else:
+        parser = {"YASTA": parse_yasta}[origin]
     results = []
     for uploaded in files:
         try:
             # UploadedFile y BytesIO: nunca se escribe el PDF al sistema de archivos.
             incoming = parser(uploaded.getvalue())
+            if origin == "BNB" and not incoming.attrs.get("bnb_validation"):
+                raise ParseError("El proceso está usando un lector BNB anterior. "
+                                 "Reinicia la aplicación y vuelve a procesar el PDF para aplicar la lectura actualizada.")
             current = st.session_state["df_movimientos"]
             combined = consolidate(current, incoming)
             added = len(combined) - len(current)
@@ -114,6 +135,7 @@ def process_uploads(files: list, origin: str) -> None:
                             "añadidos": 0, "duplicados": 0,
                             "detalle": "Error inesperado al procesar el archivo. Revisa que sea un extracto compatible."})
     st.session_state["load_results"] = results
+    st.session_state["bnb_results_outdated"] = False
     st.session_state["editor_revision"] += 1
 
 
@@ -161,6 +183,10 @@ def main() -> None:
     results = st.session_state["load_results"]
     if results:
         with st.expander("Resultado de la última carga", expanded=True):
+            if st.session_state.get("bnb_results_outdated"):
+                st.info("Este informe se guardó antes de actualizar el lector BNB. "
+                        "Vuelve a cargar y procesar los PDFs para comprobarlos con el lector actual. "
+                        "Los movimientos ya consolidados se conservan.")
             st.dataframe(pd.DataFrame(results), hide_index=True, use_container_width=True)
             if any(item["estado"] == "Error" for item in results):
                 st.warning("Algunos archivos no se añadieron. Revisa el detalle de cada error.")

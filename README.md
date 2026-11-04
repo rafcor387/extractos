@@ -137,6 +137,12 @@ volver a cargar el PDF original puede añadir la versión original del registro.
   En cada carga indica cuántos depósitos/retiros se leyeron y si se comprobaron
   los totales. Una diferencia muestra importe leído, esperado, diferencia y
   conteo por página; el mensaje completo aparece debajo de la tabla de resultados.
+  La aplicación resuelve el lector BNB desde su submódulo en cada carga, para
+  evitar referencias antiguas conservadas por el paquete. Marca los informes
+  guardados antes de un cambio del lector y pide volver a procesar los PDFs;
+  el consolidado no se borra. Si el proceso todavía utiliza un lector antiguo,
+  reinicia Streamlit después de descargar los datos de la sesión. En Community
+  Cloud utiliza **Manage app → Reboot app** y después carga los PDFs de nuevo.
   Mantiene la alternativa genérica de tablas o texto para otros diseños.
 - `parsers/common.py`: alias de encabezados en `header_map`, fechas, conversión
   de montos y validación básica de la marca de la entidad. Esta validación no

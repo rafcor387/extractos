@@ -125,6 +125,63 @@ def test_bnb_validation_detail_and_failed_import_preserve_consolidation(monkeypa
     assert "-10.00" in state["load_results"][1]["detalle"]
 
 
+def test_bnb_upload_ignores_stale_package_function(monkeypatch):
+    import app
+    import parsers
+
+    def stale_reader(_):
+        raise ValueError("Fila BNB no reconocida; ajusta los encabezados del parser.")
+
+    state = {}
+    monkeypatch.setattr(app.st, "session_state", state)
+    monkeypatch.setattr(parsers, "parse_bnb", stale_reader)
+    app.initialize_state()
+    uploaded = BytesIO(make_pdf([["BNB", "03/11/2026 Abono CRÉDITO 10.00", "Total depósitos 10.00"]]))
+    uploaded.name = "bnb.pdf"
+    app.process_uploads([uploaded], "BNB")
+    assert state["load_results"][0]["estado"] == "Procesado"
+    assert "coinciden" in state["load_results"][0]["detalle"]
+    assert len(state["df_movimientos"]) == 1
+
+
+def test_bnb_upload_detects_old_reader_without_validation_result(monkeypatch):
+    import app
+    import parsers.bnb_parser as bnb
+
+    state = {}
+    monkeypatch.setattr(app.st, "session_state", state)
+    app.initialize_state()
+    monkeypatch.setattr(bnb, "parse_bnb", lambda _: from_records([
+        {"fecha": "2026-11-03", "glosa": "Abono", "tipo": "INGRESO", "monto": 10.0, "origen": "BNB"}
+    ]))
+    uploaded = BytesIO(b"an old reader is already mocked")
+    uploaded.name = "bnb.pdf"
+    app.process_uploads([uploaded], "BNB")
+    assert state["df_movimientos"].empty
+    assert "Reinicia la aplicación" in state["load_results"][0]["detalle"]
+
+
+def test_old_bnb_report_is_marked_after_reader_changes_without_losing_movements(monkeypatch):
+    import app
+
+    state = {}
+    monkeypatch.setattr(app.st, "session_state", state)
+    app.initialize_state()
+    uploaded = BytesIO(make_pdf([["BNB", "03/11/2026 Abono CRÉDITO 10.00"]]))
+    uploaded.name = "bnb.pdf"
+    app.process_uploads([uploaded], "BNB")
+    assert not state["bnb_results_outdated"]
+    state["bnb_reader_signature"] = "previous-reader"
+    app.initialize_state()
+    assert state["bnb_results_outdated"]
+    assert len(state["df_movimientos"]) == 1
+    app.process_uploads([uploaded], "BNB")
+    assert not state["bnb_results_outdated"]
+    assert len(state["df_movimientos"]) == 1
+    app.clear_data()
+    assert not state["bnb_results_outdated"]
+
+
 def test_load_error_is_readable_below_the_results_table():
     at = AppTest.from_file(APP)
     detail = "Se leyeron 90.00; se esperaban 100.00; diferencia -10.00. Lectura por página: pág. 3."
