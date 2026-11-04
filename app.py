@@ -11,6 +11,16 @@ from movements import (
 )
 from parsers import ParseError, parse_bnb, parse_yasta
 
+MONTH_NAMES = ("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+               "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+
+def month_label(value: str) -> str:
+    if value == "Todos":
+        return value
+    year, month = value.split("-")
+    return f"{MONTH_NAMES[int(month) - 1]} {year}"
+
 
 def initialize_state() -> None:
     if "df_movimientos" not in st.session_state:
@@ -30,6 +40,7 @@ def clear_data() -> None:
     st.session_state["upload_origin"] = None
     st.session_state["filter_origin"] = "Todos"
     st.session_state["filter_type"] = "Todos"
+    st.session_state["filter_month"] = "Todos"
     st.session_state["rows_to_delete"] = set()
     st.session_state.pop("editor_snapshot", None)
     st.session_state.pop("download_payloads", None)
@@ -120,6 +131,7 @@ def process_selected_uploads(files: list, origin: str | None) -> None:
         st.session_state["upload_origin"] = None
         st.session_state["filter_origin"] = "Todos"
         st.session_state["filter_type"] = "Todos"
+        st.session_state["filter_month"] = "Todos"
 
 
 def main() -> None:
@@ -176,18 +188,24 @@ def render_consolidation() -> None:
     counts = df["origen"].value_counts()
     st.caption(f"Consolidado: {len(df)} movimientos · BNB: {counts.get('BNB', 0)} · Yasta: {counts.get('YASTA', 0)}")
     st.subheader("Movimientos")
-    left, right = st.columns(2)
+    left, right, month_col = st.columns(3)
     filter_origin = left.selectbox("Origen", ("Todos", *ORIGINS), key="filter_origin")
     filter_type = right.selectbox("Tipo", ("Todos", *TYPES), key="filter_type")
+    months = ("Todos", *sorted(df["fecha"].str[:7].unique(), reverse=True))
+    if st.session_state.get("filter_month", "Todos") not in months:
+        st.session_state["filter_month"] = "Todos"
+    filter_month = month_col.selectbox("Mes", months, format_func=month_label, key="filter_month")
     visible = df.copy()
     if filter_origin != "Todos":
         visible = visible.loc[visible["origen"] == filter_origin]
     if filter_type != "Todos":
         visible = visible.loc[visible["tipo"] == filter_type]
+    if filter_month != "Todos":
+        visible = visible.loc[visible["fecha"].str[:7] == filter_month]
     st.caption(f"{len(visible)} de {len(df)} movimientos. Edita glosa, tipo o monto y confirma la celda con Enter. Para quitar registros, marca la columna Eliminar y pulsa «Eliminar seleccionados».")
     if error := st.session_state.get("edit_error"):
         st.error(error)
-    editor_key = f"editor_{st.session_state['editor_revision']}_{filter_origin}_{filter_type}"
+    editor_key = f"editor_{st.session_state['editor_revision']}_{filter_origin}_{filter_type}_{filter_month}"
     selected = st.session_state["rows_to_delete"]
     # Conservar tanto la clave como los datos base evita reconstruir el editor
     # al marcar casillas y conserva su desplazamiento. Los cambios del widget
@@ -218,7 +236,8 @@ def render_consolidation() -> None:
     st.caption(f"La descarga incluirá {len(export_df)} registros y las cinco columnas estándar.")
     export_token = (st.session_state["editor_revision"], scope,
                     filter_origin if scope == "Vista filtrada" else None,
-                    filter_type if scope == "Vista filtrada" else None)
+                    filter_type if scope == "Vista filtrada" else None,
+                    filter_month if scope == "Vista filtrada" else None)
     payloads = st.session_state.get("download_payloads")
     if payloads is None or payloads["token"] != export_token:
         payloads = {"token": export_token, "csv": to_csv_bytes(export_df), "xlsx": to_excel_bytes(export_df)}

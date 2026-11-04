@@ -34,7 +34,7 @@ def make_pdf_streams(streams: list[bytes]) -> bytes:
 
 def bnb_section_stream(title: str, amount_header: str, rows: list[tuple[str, str, str, str]], *,
                        offset: int = 0, show_header: bool = True, show_total: bool = True,
-                       footer: str = "") -> bytes:
+                       footer: str = "", continuous_lines: bool = False) -> bytes:
     """Sección BNB realista: separadores horizontales, fecha/hora en dos líneas."""
     commands = []
 
@@ -43,7 +43,7 @@ def bnb_section_stream(title: str, amount_header: str, rows: list[tuple[str, str
         commands.append(f"BT /F1 8 Tf {x} {y - offset} Td ({value}) Tj ET")
 
     def separator(y: float) -> None:
-        xs = [40, 120, 360, 420, 490, 530, 580]
+        xs = [40, 580] if continuous_lines else [40, 120, 360, 420, 490, 530, 580]
         for left, right in zip(xs, xs[1:]):
             commands.append(f"{left} {y - offset} m {right} {y - offset} l S")
 

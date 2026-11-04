@@ -126,10 +126,11 @@ def test_selected_bank_routes_parser_and_next_load_combines_banks(monkeypatch):
     state["upload_origin"] = "BNB"
     state["filter_origin"] = "YASTA"
     state["filter_type"] = "INGRESO"
+    state["filter_month"] = "2026-05"
     app.process_selected_uploads([bnb], "BNB")
     assert state["upload_origin"] is None
     assert state["upload_revision"] == 2
-    assert state["filter_origin"] == state["filter_type"] == "Todos"
+    assert state["filter_origin"] == state["filter_type"] == state["filter_month"] == "Todos"
     assert state["df_movimientos"]["origen"].tolist() == ["YASTA", "BNB"]
     assert totals(state["df_movimientos"]) == (55.0, 20.0, 35.0)
     assert state["load_results"][0]["origen"] == "BNB"
@@ -200,6 +201,55 @@ def submit_editor_edits(at, changes):
     editor.id = at.dataframe[-1].proto.id
     editor.string_value = json.dumps({"edited_rows": changes, "added_rows": [], "deleted_rows": []})
     return at._run(states)
+
+
+def monthly_app():
+    at = AppTest.from_file(APP)
+    at.session_state["df_movimientos"] = from_records([
+        {"fecha": "2026-10-01 10:00:00", "glosa": "Octubre BNB", "tipo": "INGRESO", "monto": 100.0, "origen": "BNB"},
+        {"fecha": "2026-09-30", "glosa": "Septiembre", "tipo": "EGRESO", "monto": 20.0, "origen": "BNB"},
+        {"fecha": "2025-10-01", "glosa": "Octubre anterior", "tipo": "INGRESO", "monto": 30.0, "origen": "YASTA"},
+        {"fecha": "2026-10-31 23:59:59", "glosa": "Octubre Yasta", "tipo": "EGRESO", "monto": 40.0, "origen": "YASTA"},
+    ])
+    return at.run()
+
+
+def test_month_filter_combines_year_bank_type_and_refreshes_exports():
+    import pandas as pd
+
+    at = monthly_app()
+    assert at.selectbox(key="filter_month").options == ["Todos", "Octubre 2026", "Septiembre 2026", "Octubre 2025"]
+    at.selectbox(key="filter_month").set_value("2026-10").run()
+    assert not at.exception
+    assert at.dataframe[-1].value["glosa"].tolist() == ["Octubre BNB", "Octubre Yasta"]
+    assert [metric.value for metric in at.metric] == ["Bs 130.00", "Bs 60.00", "Bs 70.00"]
+    at.radio[0].set_value("Vista filtrada").run()
+    for fmt, reader in (("csv", pd.read_csv), ("xlsx", pd.read_excel)):
+        exported = reader(BytesIO(at.session_state["download_payloads"][fmt]))
+        assert exported["glosa"].tolist() == ["Octubre BNB", "Octubre Yasta"]
+    at.selectbox(key="filter_month").set_value("2025-10").run()
+    assert pd.read_csv(BytesIO(at.session_state["download_payloads"]["csv"]))["glosa"].tolist() == ["Octubre anterior"]
+    at.selectbox(key="filter_month").set_value("2026-10").run()
+    at.selectbox(key="filter_origin").set_value("YASTA").run()
+    at.selectbox(key="filter_type").set_value("EGRESO").run()
+    assert not at.exception
+    assert at.dataframe[-1].value["glosa"].tolist() == ["Octubre Yasta"]
+    submit_editor_edits(at, {"0": {"monto": 45.0}})
+    assert at.session_state["df_movimientos"]["monto"].tolist() == [100.0, 20.0, 30.0, 45.0]
+
+
+def test_deleting_last_row_of_selected_month_resets_month_filter():
+    at = monthly_app()
+    at.selectbox(key="filter_month").set_value("2026-09").run()
+    submit_editor_edits(at, {"0": {"eliminar": True}})
+    at.button(key="delete_selected_button").click().run()
+    assert not at.exception
+    assert at.selectbox(key="filter_month").value == "Todos"
+    assert at.session_state["df_movimientos"]["glosa"].tolist() == ["Octubre BNB", "Octubre anterior", "Octubre Yasta"]
+    at.selectbox(key="filter_month").set_value("2026-10").run()
+    at.button(key="clear_data_button").click().run()
+    assert not at.exception
+    assert at.session_state["filter_month"] == "Todos"
 
 
 def test_marking_then_deleting_filtered_row_updates_totals_and_preserves_other_rows():

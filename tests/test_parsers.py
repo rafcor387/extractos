@@ -80,6 +80,54 @@ def test_bnb_both_sections_on_same_page():
     assert totals(df) == (90.0, 30.5, 59.5)
 
 
+@pytest.mark.parametrize("continuous_lines", [False, True])
+def test_bnb_keywords_and_row_lines_across_pages_without_repeated_headers(continuous_lines):
+    # Solo el primer bloque tiene encabezado. Los títulos identifican el tipo,
+    # aunque las secciones ocupen varias hojas y empiecen en orden inverso.
+    pages = [
+        bnb_section_stream("Retiros", "Débitos", [("01/08/2026", "10:01", "PAGO UNO", "10.00")],
+                           continuous_lines=continuous_lines, show_total=False),
+        bnb_section_stream("Retiros (continuación)", "Débitos", [("02/08/2026", "10:02", "PAGO DOS\nDetalle completo", "20.00")],
+                           continuous_lines=continuous_lines, show_header=False),
+        bnb_section_stream("Depósitos / Créditos", "Créditos", [("03/08/2026", "10:03", "ABONO UNO", "30.00")],
+                           continuous_lines=continuous_lines, show_header=False, show_total=False),
+        bnb_section_stream("", "Créditos", [("04/08/2026", "10:04", "ABONO DOS", "40.00")],
+                           continuous_lines=continuous_lines, show_header=False),
+    ]
+    df = parse_bnb(make_pdf_streams(pages))
+    assert df["tipo"].tolist() == ["EGRESO", "EGRESO", "INGRESO", "INGRESO"]
+    assert df["glosa"].tolist() == ["PAGO UNO", "PAGO DOS Detalle completo", "ABONO UNO", "ABONO DOS"]
+    assert totals(df) == (70.0, 30.0, 40.0)
+
+
+def test_bnb_new_section_without_header_on_same_page():
+    deposit = bnb_section_stream("Depósitos", "Créditos", [("03/10/2026", "11:26", "ABONO", "90.00")])
+    withdrawal = bnb_section_stream("Retiros", "Débitos", [("05/10/2026", "13:08", "PAGO", "30.50")],
+                                    offset=220, show_header=False)
+    df = parse_bnb(make_pdf_streams([deposit + b"\n" + withdrawal]))
+    assert df["tipo"].tolist() == ["INGRESO", "EGRESO"]
+    assert totals(df) == (90.0, 30.5, 59.5)
+
+
+def test_bnb_note_after_last_row_does_not_become_a_movement():
+    body = bnb_section_stream("Retiros", "Débitos", [("03/10/2026", "11:26", "PAGO", "30.50")])
+    # Hay una nota y otra línea antes del total. No pertenecen a la última fila.
+    note = b"\nBT /F1 8 Tf 40 620 Td (Aviso del banco) Tj ET\n40 615 m 580 615 l S"
+    df = parse_bnb(make_pdf_streams([body + note]))
+    assert df["glosa"].tolist() == ["PAGO"]
+    assert totals(df) == (0.0, 30.5, -30.5)
+
+
+def test_bnb_missing_row_separator_rejects_statement():
+    body = bnb_section_stream("Retiros", "Débitos", [
+        ("03/10/2026", "11:26", "PAGO UNO", "30.50"),
+        ("04/10/2026", "11:26", "PAGO DOS", "10.00"),
+    ], continuous_lines=True)
+    body = body.replace(b"40 632 m 580 632 l S", b"")
+    with pytest.raises(ParseError, match="Página 1.*separe sus registros"):
+        parse_bnb(make_pdf_streams([body]))
+
+
 @pytest.mark.parametrize("repeat_header", [False, True])
 def test_bnb_sections_continue_across_pages_without_repeated_title(repeat_header):
     pages = [

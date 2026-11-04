@@ -58,11 +58,13 @@ Reiniciar conservando `streamlit==1.42.0` no actualiza esa dependencia.
    como necesites. Cambiar el banco prepara un cargador nuevo para esa entidad.
    Todos los meses y cuentas se acumulan en una única tabla con totales conjuntos.
    Los archivos válidos se añaden aunque otro archivo de la misma carga falle.
-   La vista vuelve a mostrar todos los bancos y tipos al añadir una carga válida.
+   La vista vuelve a mostrar todos los bancos, tipos y meses al añadir una carga válida.
 4. Revisa los movimientos y, si hace falta, edita **glosa**, **tipo** o **monto**.
    Confirma cada celda con Enter. Se recalculan los totales de todo el consolidado.
-5. Filtra por origen o tipo. Las correcciones afectan al registro original,
-   también cuando trabajas sobre una vista filtrada.
+5. Filtra por origen, tipo o **mes**. El selector de mes distingue el año y muestra
+   los períodos disponibles, del más reciente al más antiguo. Los tres filtros
+   se combinan y se aplican al descargar la **vista filtrada**.
+   Las correcciones afectan al registro original, también en una vista filtrada.
 6. Para quitar movimientos, marca su casilla en la columna **Eliminar** y pulsa
    **Eliminar seleccionados**. La selección se conserva al cambiar filtros y
    el botón elimina todos los marcados, incluso si algún filtro los oculta.
@@ -113,8 +115,10 @@ volver a cargar el PDF original puede añadir la versión original del registro.
 - `parsers/yasta_parser.py`: calibrado con el extracto Yasta de ejemplo de mayo
   de 2026. Primero extrae tablas para conservar descripciones que ocupan varias
   líneas. Si no encuentra tablas, usa `TEXT_ROW` y une las líneas de continuación.
-- `parsers/bnb_parser.py`: calibrado con el extracto BNB de octubre de 2026.
-  Reconstruye las columnas desde los encabezados y separadores horizontales.
+- `parsers/bnb_parser.py`: lectura por secciones **Depósitos** y **Retiros**,
+  validada con el extracto BNB de octubre de 2026 y variaciones sintéticas.
+  Lee cada registro entre sus separadores horizontales y deduce las columnas
+  desde los encabezados; admite líneas continuas o divididas por columna.
   Depósitos/Créditos se convierten en `INGRESO` y Retiros/Débitos en `EGRESO`.
   Une fecha y hora aunque estén en líneas diferentes y conserva la descripción
   completa; omite referencia, comprobante e ITF. Comprueba los totales extraídos
@@ -122,6 +126,8 @@ volver a cargar el PDF original puede añadir la versión original del registro.
   Mantiene la sección activa entre páginas, incluso si una continuación no
   repite el título ni el encabezado. Un total cierra la sección y un nuevo título
   cambia a la siguiente; también admite ambas secciones en la misma página.
+  Conserva la geometría de las columnas para una sección nueva sin encabezado,
+  cambiando el tipo según su título. Las notas fuera de las filas no se importan.
   Mantiene la alternativa genérica de tablas o texto para otros diseños.
 - `parsers/common.py`: alias de encabezados en `header_map`, fechas, conversión
   de montos y validación básica de la marca de la entidad. Esta validación no

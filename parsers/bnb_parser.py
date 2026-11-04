@@ -1,7 +1,7 @@
 """BNB: secciones de Depósitos/Créditos y Retiros/Débitos.
 
-Calibrado con el extracto de octubre 2026. Sus filas tienen separadores
-horizontales, pero no verticales: reconstruimos las columnas desde sus bordes.
+Las secciones Depósitos y Retiros pueden continuar en otras páginas. Sus filas
+se leen entre separadores horizontales y las columnas se deducen del encabezado.
 Referencia, comprobante e ITF nunca forman parte de los cinco valores de salida.
 Se conserva la alternativa genérica para tablas y texto de otros formatos.
 """
@@ -9,7 +9,7 @@ Se conserva la alternativa genérica para tablas y texto de otros formatos.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import pandas as pd
 from pdfplumber.page import Page
 
@@ -62,8 +62,18 @@ def _layout_headers(page: Page) -> list[dict]:
         edges = [edge for edge in page.edges if edge["orientation"] == "h"
                  and date["bottom"] < edge["top"] < date["bottom"] + 6]
         xs = sorted({edge[key] for edge in edges for key in ("x0", "x1")})
-        if len(xs) < 4 or not (date["x0"] < description["x0"] < reference["x0"] < amount["x0"]):
+        if not edges or not (date["x0"] < description["x0"] < reference["x0"] < amount["x0"]):
             raise ParseError("No se pudieron reconstruir las columnas del extracto BNB.")
+        if len(xs) < 4:
+            # Algunos PDFs dibujan una sola línea continua: sus extremos no
+            # revelan columnas. En ese caso usamos los anclajes del encabezado.
+            anchors = [description, reference, amount]
+            for pattern in (r"Comprobante", r"\bITF\b"):
+                anchors.extend(hit for hit in page.search(pattern, case=False)
+                               if abs(hit["top"] - date["top"]) < 2)
+            xs = [min(xs[0], date["x0"]),
+                  *sorted({hit["x0"] for hit in anchors}),
+                  max(xs[-1], amount["x1"])]
         labels = [""] * (len(xs) - 1)
         for anchor, label in ((date, "Fecha Hora"), (description, "Descripción"), (amount, amount["text"])):
             index = next((i for i in range(len(xs) - 1) if xs[i] - 0.1 <= anchor["x0"] < xs[i + 1] - 0.1), None)
@@ -77,7 +87,7 @@ def _layout_headers(page: Page) -> list[dict]:
 
 
 def _region_tables(page: Page, layout: TableLayout, top: float, bottom: float) -> list[list]:
-    """Recorta exclusivamente las filas de una sección entre dos límites."""
+    """Lee cada registro entre sus líneas, sin inferir una tabla de toda la página."""
     xs = layout.columns
     dates = [hit for hit in page.search(DATE_PATTERN)
              if xs[0] - 0.1 <= hit["x0"] and hit["x1"] <= xs[1] + 0.1
@@ -89,21 +99,30 @@ def _region_tables(page: Page, layout: TableLayout, top: float, bottom: float) -
     separators = sorted({edge["top"] for edge in page.edges if edge["orientation"] == "h"
                          and edge["x0"] <= xs[0] + 0.1 and edge["x1"] >= xs[1] - 0.1
                          and top <= edge["top"] <= bottom})
-    first_date = min(hit["top"] for hit in dates)
-    preceding = [y for y in separators if y <= first_date]
-    if not preceding:
-        raise ParseError("La continuación BNB no tiene un separador que permita delimitar la primera fila.")
-    start = max(preceding)
-    last_date_bottom = max(hit["bottom"] for hit in dates)
-    following = [y for y in separators if y >= last_date_bottom]
-    end = max(following) if following else bottom
-    tables = page.crop((xs[0], start, xs[-1], end)).extract_tables({
-        "vertical_strategy": "explicit", "explicit_vertical_lines": list(xs),
-        "horizontal_strategy": "lines", "explicit_horizontal_lines": [start, end],
-        "snap_tolerance": 2, "intersection_tolerance": 3,
-        "text_x_tolerance": 1, "text_y_tolerance": 2,
-    })
-    return [[layout.labels, *table] for table in tables]
+    rows = []
+    previous_end = top
+    for date in sorted(dates, key=lambda hit: hit["top"]):
+        preceding = [y for y in separators if y <= date["top"]]
+        if not preceding:
+            raise ParseError("La continuación BNB no tiene un separador que permita delimitar la primera fila.")
+        start = max(preceding)
+        following = [y for y in separators if y >= date["bottom"]]
+        end = min(following) if following else bottom
+        if start < previous_end - 0.1:
+            raise ParseError("Hay varias fechas BNB sin una línea que separe sus registros.")
+        # Recortar una fila por vez conserva descripciones que comienzan antes
+        # de la fecha centrada y evita que pies o tablas vecinas creen filas falsas.
+        row = []
+        for left, right in zip(xs, xs[1:]):
+            region = page.crop((left, start, right, end))
+            # Igual que en una tabla, asignar cada carácter por su centro evita
+            # duplicar letras que tocan el borde entre dos columnas.
+            region = region.filter(lambda obj: obj.get("object_type") != "char" or
+                                   left <= (obj["x0"] + obj["x1"]) / 2 < right)
+            row.append(region.extract_text(x_tolerance=1, y_tolerance=2) or "")
+        rows.append(row)
+        previous_end = end
+    return [[layout.labels, *rows]]
 
 
 def _positioned_tables(page: Page, state: SectionState) -> list[tuple[list, str]] | None:
@@ -119,7 +138,10 @@ def _positioned_tables(page: Page, state: SectionState) -> list[tuple[list, str]
         state.native = True
     if not headers and state.layout is None:
         return None
-    titles = page.search(r"(?m)^\s*(Dep[oó]sitos|Retiros)(?:\s*(?:\(continuaci[oó]n\)|[-:]?\s*continuaci[oó]n))?\s*$", case=False)
+    titles = page.search(
+        r"(?m)^[ \t]*(Dep[oó]sitos|Retiros)[ \t]*:?(?:[ \t]*(?:/|-)[ \t]*(?:Cr[eé]ditos|D[eé]bitos))?"
+        r"(?:[ \t]*(?:\(continuaci[oó]n\)|[-:]?[ \t]*continuaci[oó]n))?[ \t]*$", case=False
+    )
     totals = page.search(r"(?m)^\s*Total\s+(dep[oó]sitos|retiros)\b", case=False)
     footers = page.search(r"(?m)^\s*P[aá]gina\s+\d+\s+de\s+\d+\s*$", case=False)
     events = [(hit["top"], "title", hit) for hit in titles]
@@ -134,8 +156,13 @@ def _positioned_tables(page: Page, state: SectionState) -> list[tuple[list, str]
             batches.extend((table, state.kind) for table in _region_tables(page, state.layout, cursor, boundary - 0.1))
         if event == "title":
             kind = "INGRESO" if normalize(hit["text"]).startswith("DEPOSITOS") else "EGRESO"
-            if kind != state.kind:
-                state.layout = None
+            if state.layout and kind != state.kind:
+                # Un nuevo título puede cambiar de sección sin repetir columnas.
+                # La geometría se conserva; solo cambia la columna de monto.
+                labels = [label if normalize(label) not in {"CREDITOS", "DEBITOS"}
+                          else ("Créditos" if kind == "INGRESO" else "Débitos")
+                          for label in state.layout.labels]
+                state.layout = replace(state.layout, labels=labels, kind=kind)
             state.kind = kind
         elif event == "header":
             layout = hit["layout"]
@@ -146,7 +173,7 @@ def _positioned_tables(page: Page, state: SectionState) -> list[tuple[list, str]
             kind = "INGRESO" if "DEPOSITOS" in normalize(hit["text"]) else "EGRESO"
             if state.kind is not None and state.kind != kind:
                 raise ParseError("El total BNB no corresponde a la sección activa.")
-            state.kind, state.layout = None, None
+            state.kind = None
         elif event in {"footer", "end"}:
             break
         cursor = hit["bottom"] + 0.1
