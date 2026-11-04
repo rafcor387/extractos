@@ -102,6 +102,11 @@ movimientos que hayas borrado de la tabla.
 
 La hora se conserva como hora local escrita en el documento, sin conversión de
 zona horaria. En Yasta es obligatoria. Crédito = ingreso; débito = egreso.
+En BNB se conserva el signo impreso para la validación. Si todos los totales
+presentes de una sección confirman que un importe negativo es una reversión,
+se exporta con el tipo contrario y monto positivo: por ejemplo, un débito
+revertido de -167.10 pasa a `INGRESO` por 167.10. No se cambia su sentido si
+el resumen del banco valida los montos absolutos. Totales incompatibles se rechazan.
 El saldo neto es ingresos menos egresos, no el saldo bancario del documento.
 Las métricas suponen extractos en la misma moneda (Bs); no hay conversión de divisas.
 
@@ -134,6 +139,10 @@ volver a cargar el PDF original puede añadir la versión original del registro.
   Conserva la geometría de las columnas para una sección nueva sin encabezado,
   cambiando el tipo según su título. Las notas fuera de las filas no se importan.
   Cuenta las fechas en su columna, sin confundir fechas escritas en la glosa.
+  Toma la fecha y hora de sus posiciones reales, aunque la celda contenga el
+  principio de la descripción por una sangría del encabezado; recupera esa
+  parte de la glosa en lugar de descartarla. Los signos de los importes se
+  contrastan con los totales antes de interpretar reversiones.
   En cada carga indica cuántos depósitos/retiros se leyeron y si se comprobaron
   los totales. Una diferencia muestra importe leído, esperado, diferencia y
   conteo por página; el mensaje completo aparece debajo de la tabla de resultados.

@@ -96,11 +96,15 @@ def _separators(page: Page, left: float, right: float, top: float, bottom: float
     return [(start + end) / 2 for start, end in merged]
 
 
-def _cell_text(page: Page, left: float, top: float, right: float, bottom: float) -> str:
+def _cell_text(page: Page, left: float, top: float, right: float, bottom: float,
+               *, exclude: list[dict] | None = None) -> str:
     region = page.crop((left, top, right, bottom))
     region = region.filter(lambda obj: obj.get("object_type") != "char" or (
         left <= (obj["x0"] + obj["x1"]) / 2 < right
         and top <= (obj["top"] + obj["bottom"]) / 2 < bottom
+        and not any(hit["x0"] <= (obj["x0"] + obj["x1"]) / 2 <= hit["x1"]
+                    and hit["top"] <= (obj["top"] + obj["bottom"]) / 2 <= hit["bottom"]
+                    for hit in (exclude or []))
     ))
     return region.extract_text(x_tolerance=1, y_tolerance=2) or ""
 
@@ -232,12 +236,30 @@ def _region_tables(page: Page, layout: TableLayout, top: float, bottom: float) -
     end = min(following) if following else bottom
     limits = [start, *boundaries, end]
     rows = []
-    for start, end in zip(limits, limits[1:]):
+    mapping = header_map(layout.labels)
+    for date, start, end in zip(dates, limits, limits[1:]):
         # Recortar una fila por vez conserva descripciones que comienzan antes
         # de la fecha centrada y evita que pies o tablas vecinas creen filas falsas.
         row = []
         for left, right in zip(xs, xs[1:]):
             row.append(_cell_text(page, left, start, right, end))
+        # La fecha se toma de su coincidencia exacta. Los extremos de líneas
+        # decorativas y la sangría del encabezado no definen su texto real.
+        hours = [hit for hit in page.search(TIME_PATTERN)
+                 if start <= hit["top"] and hit["bottom"] <= end
+                 and date["x0"] - 1 <= hit["x0"] < min(xs[1], date["x1"] + _height(date) * 2)]
+        if hours:
+            hours.sort(key=lambda hit: abs(hit["x0"] - date["x0"]))
+            aligned = [hit for hit in hours if abs(hit["x0"] - hours[0]["x0"]) < 1]
+            if len(aligned) > 1:
+                raise ParseError(f"Hay varias horas alineadas con la fecha {date['text']} en un mismo registro.")
+            hours = [hours[0]]
+        row[mapping["fecha"]] = clean(date["text"] + " " + (hours[0]["text"] if hours else ""))
+        description_col = mapping["glosa"]
+        # Recuperar también el inicio de la glosa que antes caía dentro de la
+        # celda de fecha; no basta con borrar DEBI/Cuen y perder información.
+        row[description_col] = _cell_text(page, min(xs[description_col], date["x1"]), start,
+                                          xs[description_col + 1], end, exclude=[date, *hours])
         rows.append(row)
     return [[layout.labels, *rows]]
 
@@ -307,6 +329,22 @@ def _positioned_tables(page: Page, state: SectionState) -> list[tuple[list, str]
     return batches
 
 
+def _signed_amount(value: str) -> float:
+    """Conserva el signo impreso BNB sin cambiar el lector compartido de Yasta."""
+    text = clean(value).replace(" ", "").replace("\u2212", "-")
+    text = re.sub(r"^(?:Bs\.?|BOB)", "", text, flags=re.I)
+    negative = text.startswith("-") or (text.startswith("(") and text.endswith(")"))
+    return -parse_amount(value) if negative else parse_amount(value)
+
+
+def _bnb_record(date: str, description: str, kind: str, signed_amount: float) -> dict:
+    # La sección y el signo se conservan para validar el resumen bancario.
+    # from_records elimina estos metadatos internos de las cinco columnas finales.
+    return {"fecha": parse_date(date), "glosa": description,
+            "tipo": kind, "monto": abs(signed_amount), "origen": "BNB",
+            "_bnb_section": kind, "_bnb_signed_amount": signed_amount}
+
+
 def _row_record(row: list, mapping: dict[str, int]) -> dict:
     date = cell(row, mapping, "fecha")
     hour = cell(row, mapping, "hora")
@@ -316,22 +354,21 @@ def _row_record(row: list, mapping: dict[str, int]) -> dict:
     if "debito" in mapping and "credito" in mapping:
         debit_text = cell(row, mapping, "debito")
         credit_text = cell(row, mapping, "credito")
-        debit = parse_amount(debit_text) if debit_text not in {"", "-", "—"} else 0.0
-        credit = parse_amount(credit_text) if credit_text not in {"", "-", "—"} else 0.0
-        if (debit > 0) == (credit > 0):
-            raise ParseError("La fila debe tener un único débito o crédito mayor que cero.")
-        kind, amount = ("EGRESO", debit) if debit > 0 else ("INGRESO", credit)
+        debit = _signed_amount(debit_text) if debit_text not in {"", "-", "—"} else 0.0
+        credit = _signed_amount(credit_text) if credit_text not in {"", "-", "—"} else 0.0
+        if (debit != 0) == (credit != 0):
+            raise ParseError("La fila debe tener un único débito o crédito distinto de cero.")
+        kind, amount = ("EGRESO", debit) if debit != 0 else ("INGRESO", credit)
     elif "debito" in mapping or "credito" in mapping:
         field = "debito" if "debito" in mapping else "credito"
         kind = "EGRESO" if field == "debito" else "INGRESO"
-        amount = parse_amount(cell(row, mapping, field))
+        amount = _signed_amount(cell(row, mapping, field))
     else:
         kind = movement_type(cell(row, mapping, "tipo"))
-        amount = parse_amount(cell(row, mapping, "monto"))
-    if amount <= 0:
-        raise ParseError("El importe del movimiento debe ser mayor que cero.")
-    return {"fecha": parse_date(f"{date} {hour}".strip()), "glosa": description,
-            "tipo": kind, "monto": amount, "origen": "BNB"}
+        amount = _signed_amount(cell(row, mapping, "monto"))
+    if amount == 0:
+        raise ParseError("El importe del movimiento debe ser distinto de cero.")
+    return _bnb_record(f"{date} {hour}".strip(), description, kind, amount)
 
 
 def _table_records(page, section: str | None = None, *, state: SectionState | None = None) -> list[dict]:
@@ -380,8 +417,8 @@ def _text_records(text: str) -> list[dict]:
         match = TEXT_ROW.fullmatch(line)
         if match:
             date, hour, description, kind, amount = match.groups()
-            records.append({"fecha": parse_date(f"{date} {hour or ''}".strip()), "glosa": description,
-                            "tipo": movement_type(kind), "monto": parse_amount(amount), "origen": "BNB"})
+            records.append(_bnb_record(f"{date} {hour or ''}".strip(), description,
+                                       movement_type(kind), _signed_amount(amount)))
         elif BNB_DATE_START.match(line):
             raise ParseError("Fila BNB sin columnas o tipo reconocible; se necesita calibrar el parser con este PDF.")
     return records
@@ -391,8 +428,12 @@ def _validate_summary(records: list[dict], texts: list[str]) -> int:
     """Contrasta los movimientos con el resumen del extracto si está disponible."""
     lines = [normalize(line) for text in texts for line in text.splitlines() if clean(line)]
     checks = 0
+    signed_sections = set()
     for label, section, kind in (("CREDITOS", "DEPOSITOS", "INGRESO"), ("DEBITOS", "RETIROS", "EGRESO")):
-        actual_cents = sum(round(record["monto"] * 100) for record in records if record["tipo"] == kind)
+        section_records = [record for record in records if record.get("_bnb_section", record["tipo"]) == kind]
+        actual_cents = sum(round(record["monto"] * 100) for record in section_records)
+        signed_cents = sum(round(record.get("_bnb_signed_amount", record["monto"]) * 100) for record in section_records)
+        modes = {"magnitude", "signed"}
         for heading in (f"TOTAL DE {label}", f"TOTAL {section}"):
             matches = []
             for i, line in enumerate(lines):
@@ -411,17 +452,39 @@ def _validate_summary(records: list[dict], texts: list[str]) -> int:
             # Una misma cifra puede repetirse en el resumen y en otra hoja.
             # También puede haber varios totales de sección que sí se suman.
             expected = sum(matches)
-            if len(set(matches)) == 1 and expected != actual_cents:
-                expected = matches[0]
-            if expected != actual_cents:
-                count = sum(record["tipo"] == kind for record in records)
+            expected_values = {expected}
+            if len(set(matches)) == 1:
+                expected_values.add(matches[0])
+                if expected not in (actual_cents, signed_cents):
+                    expected = matches[0]
+            matches_modes = set()
+            if actual_cents in expected_values:
+                matches_modes.add("magnitude")
+            if signed_cents in expected_values:
+                matches_modes.add("signed")
+            previous_modes = modes
+            modes = modes & matches_modes
+            if not modes:
+                if matches_modes and previous_modes:
+                    raise ParseError(f"Los totales BNB de {section.title()} no son compatibles entre sí: "
+                                     "unos incluyen los signos impresos y otros suman los valores absolutos. "
+                                     "No se añadirá un extracto sin una validación consistente.")
+                sign_detail = (f" Con los signos impresos, la suma es {signed_cents / 100:,.2f}."
+                               if signed_cents != actual_cents else "")
                 raise ParseError(
                     f"Los {label.lower()} extraídos no coinciden con el total BNB: "
-                    f"{count} registros suman {actual_cents / 100:,.2f}; "
+                    f"{len(section_records)} registros suman {actual_cents / 100:,.2f}; "
                     f"«{heading.title()}» indica {expected / 100:,.2f}; "
-                    f"diferencia {(actual_cents - expected) / 100:+,.2f}. "
+                    f"diferencia {(actual_cents - expected) / 100:+,.2f}.{sign_detail} "
                     "No se añadirá un extracto parcial."
                 )
+        if modes == {"signed"}:
+            signed_sections.add(kind)
+    # Solo interpretar un importe negativo como reversión si TODOS los totales
+    # presentes de su sección lo confirman. No escoger filas ni ajustar montos.
+    for record in records:
+        if record.get("_bnb_section") in signed_sections and record["_bnb_signed_amount"] < 0:
+            record["tipo"] = "EGRESO" if record["_bnb_section"] == "INGRESO" else "INGRESO"
     return checks
 
 
@@ -452,10 +515,13 @@ def parse_bnb(pdf_bytes: bytes) -> pd.DataFrame:
     except ParseError as exc:
         raise ParseError(f"{exc} Lectura por página: {'; '.join(page_counts)}.") from exc
     result = from_records(records)
-    deposits = sum(record["tipo"] == "INGRESO" for record in records)
+    deposits = sum(record.get("_bnb_section", record["tipo"]) == "INGRESO" for record in records)
     withdrawals = len(records) - deposits
     validation = f"BNB: {deposits} depósitos y {withdrawals} retiros. "
     validation += ("Los importes coinciden con los totales del documento." if checks
                    else "Filas verificadas; el documento no incluye totales comparables.")
+    reversals = sum(record["tipo"] != record.get("_bnb_section", record["tipo"]) for record in records)
+    if reversals:
+        validation += f" Se conservaron {reversals} {'reversión validada' if reversals == 1 else 'reversiones validadas'} por los totales del banco."
     result.attrs["bnb_validation"] = validation
     return result

@@ -192,6 +192,73 @@ def test_bnb_right_aligned_amount_heading_does_not_cut_digits():
     assert df["glosa"].tolist() == ["PAGO"]
 
 
+def test_bnb_indented_description_header_does_not_pollute_date_or_truncate_glosa():
+    description = "DEBITO EN CUENTA\nCuenta Destino: Prueba"
+    body = bnb_section_stream("Retiros", "Débitos", [("01/09/2026", "15:17", description, "30.50")])
+    # El encabezado y los extremos de los tramos están más a la derecha que
+    # la descripción real: la celda de fecha terminaba incluyendo DEBI/Cuen.
+    body = body.replace(b"120 680 Td", b"140 680 Td")
+    body = body.replace(b"120 674", b"140 674").replace(b"120 632", b"140 632")
+    df = parse_bnb(make_pdf_streams([body]))
+    assert df["fecha"].tolist() == ["2026-09-01 15:17:00"]
+    assert df["glosa"].tolist() == ["DEBITO EN CUENTA Cuenta Destino: Prueba"]
+    assert df["monto"].tolist() == [30.5]
+
+
+def test_bnb_signed_withdrawal_reconciles_the_reported_334_20_difference():
+    # 22 cargos positivos y una reversión de 167.10: al perder el signo,
+    # los 23 importes sumaban 4,277.11 en lugar de 3,942.91.
+    rows = [(f"{day:02d}/08/2026", "15:17", f"PAGO {day}", "100.00") for day in range(1, 22)]
+    rows += [("22/08/2026", "15:17", "PAGO FINAL", "2,010.01"),
+             ("23/08/2026", "15:17", "REVERSIÓN", "-167.10")]
+    cover = (b"BT /F1 10 Tf 40 740 Td 16 TL (BNB) Tj T* "
+             b"(Total de creditos 100.00) Tj T* (Total de debitos 3,942.91) Tj ET")
+    deposits = bnb_section_stream("Depósitos", "Créditos", [("01/08/2026", "10:00", "ABONO", "100.00")])
+    withdrawals = b"q 1 0 0 0.5 0 360 cm\n" + bnb_section_stream("Retiros", "Débitos", rows) + b"\nQ"
+    df = parse_bnb(make_pdf_streams([cover, deposits, withdrawals, b""]))
+    assert len(df) == 24
+    assert totals(df) == (267.1, 4110.01, -3842.91)
+    reversal = df.loc[df["glosa"] == "REVERSIÓN"].iloc[0]
+    assert reversal["tipo"] == "INGRESO" and reversal["monto"] == 167.1
+    assert "reversión" in df.attrs["bnb_validation"]
+
+
+@pytest.mark.parametrize("printed", ["-25.00", "(25.00)"])
+def test_bnb_negative_deposit_is_an_expense_only_when_bank_totals_confirm_it(printed):
+    body = bnb_section_stream("Depósitos", "Créditos", [
+        ("01/09/2026", "10:00", "ABONO", "100.00"),
+        ("02/09/2026", "11:00", "REVERSIÓN DE ABONO", printed),
+    ])
+    summary = b"\nBT /F1 8 Tf 40 40 Td (Total de creditos 75.00) Tj ET"
+    df = parse_bnb(make_pdf_streams([body + summary]))
+    assert list(df.columns) == COLUMNS
+    assert df["monto"].tolist() == [100.0, 25.0]
+    assert df["tipo"].tolist() == ["INGRESO", "EGRESO"]
+    assert totals(df) == (100.0, 25.0, 75.0)
+
+
+def test_bnb_negative_charge_not_reversed_when_summary_uses_magnitudes():
+    raw = make_pdf([["BNB", "Total de débitos 125.00", "01/09/2026 Pago DÉBITO 100.00",
+                     "02/09/2026 Otro pago DÉBITO -25.00"]])
+    df = parse_bnb(raw)
+    assert df["tipo"].tolist() == ["EGRESO", "EGRESO"]
+    assert totals(df) == (0.0, 125.0, -125.0)
+
+
+def test_bnb_inconsistent_signed_summary_and_section_total_rejected():
+    raw = make_pdf([["BNB", "Total de débitos 75.00", "01/09/2026 Pago DÉBITO 100.00",
+                     "02/09/2026 Reversión DÉBITO -25.00", "Total retiros 125.00"]])
+    with pytest.raises(ParseError, match="no son compatibles entre sí"):
+        parse_bnb(raw)
+
+
+def test_bnb_still_rejects_mismatch_when_neither_signed_nor_magnitude_total_matches():
+    raw = make_pdf([["BNB", "Total de débitos 80.00", "01/09/2026 Pago DÉBITO 100.00",
+                     "02/09/2026 Reversión DÉBITO -25.00"]])
+    with pytest.raises(ParseError, match="no coinciden.*signos impresos"):
+        parse_bnb(raw)
+
+
 def test_bnb_overlapping_rows_are_rejected_even_when_amounts_would_add_up():
     body = bnb_section_stream("Retiros", "Débitos", [
         ("03/10/2026", "11:26", "PAGO UNO\nDetalle A\nDetalle B\nDetalle C\nDetalle D", "30.50"),
